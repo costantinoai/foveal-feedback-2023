@@ -95,7 +95,11 @@ def load_functional_images(subject, run, dir_func):
     - np.array: Functional image data.
     """
     path = os.path.join(dir_func, f'sub-{subject}_task-exp_run-{run}_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz')
-    return nib.load(path).get_fdata()
+    if os.path.exists(path):
+        return nib.load(path).get_fdata()
+    else:
+        return None
+    
 
 
 def load_and_process_events(subject, run, dir_events):
@@ -189,30 +193,35 @@ def main():
     dir_func = './data/func'
     
     # List of subjects
-    subjects = ['02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25']
+    subjects = [str(i).zfill(2) for i in range(2, 26)]
 
     X_rec = []
 
     for sub in subjects:
         # Load ROIs
         rois = load_roi_images(sub, dir_rois)
-        
+        print('='*40)
         for run in range(1, 6):
-            print(f"Processing subject {sub}, run {run}")
+            print(f"STEP: Processing subject {sub}, run {run}")
 
-            # Load functional images
+            # Load functional images (and skip iteration if no func is found)
             func_img_data = load_functional_images(sub, run, dir_func)
+            
+            if func_img_data is None:
+                print(f"WARNING: No functional image found for {sub}, run {run}.. SKIPPING.")
+                continue
+            
             n_scans = func_img_data.shape[-1]  # Number of time frames in the functional data
             func_img = np.reshape(func_img_data, (-1, n_scans)).T  # Reshape to (n_samples, n_features)
-            print(f"Loaded functional data for subject {sub}, run {run} with {n_scans} scans")
+            print(f"\tLoaded functional data for subject {sub}, run {run} with {n_scans} scans")
 
             # Load events
             events = load_and_process_events(sub, run, dir_events)
-            print(f"Loaded event data for subject {sub}, run {run}")
+            print(f"\tLoaded event data for subject {sub}, run {run}")
             
             # Load motion confounds
             motion = np.loadtxt(os.path.join(dir_confounds, f'sub-{sub}_pipeline-6HMP_run-{run}.txt'))
-            print(f"Loaded motion confounds for subject {sub}, run {run}")
+            print(f"\tLoaded motion confounds for subject {sub}, run {run}")
             
             # Verify that the motion data's length matches the number of time frames in the functional data
             assert motion.shape[0] == n_scans, "Mismatch between number of time frames in the functional data and motion regressors."
@@ -221,14 +230,14 @@ def main():
             tr = 2.0
             frame_times = np.arange(n_scans) * tr
             X = make_design_matrix(events, motion, frame_times)
-            print(f"Created design matrix for subject {sub}, run {run}")
+            print(f"\tCreated design matrix for subject {sub}, run {run}")
 
             # Apply PCA and extract signals
             for roi_name, mask in rois.items():
                 signal, exp_var = apply_pca_and_extract_signal(func_img, mask)
                 X[f'y_{roi_name}'] = signal
                 X[f'exp_var_{roi_name}'] = exp_var
-                print(f"Applied PCA for ROI {roi_name} in subject {sub}, run {run}")
+                print(f"\tApplied PCA for ROI {roi_name} in subject {sub}, run {run}")
 
             X['sub'] = sub
             X['run'] = run
@@ -237,13 +246,15 @@ def main():
             ppi_mult = 2 * X['y_p'] - 1
             for roi_name in rois:
                 X[f'y_ppi_{roi_name}'] = ppi_mult * X[f'y_{roi_name}']
-                print(f"Calculated PPI term for ROI {roi_name} in subject {sub}, run {run}")
+                print(f"\tCalculated PPI term for ROI {roi_name} in subject {sub}, run {run}")
             
             X['TR'] = X.index // 2
             
             # Append to the record
             X_rec.append(X)
-            print(f"Finished processing subject {sub}, run {run}")
+            print(f"DONE: Finished processing subject {sub}, run {run}")
+            print('-'*40)
+            
 
     # Post processing
     X = pd.concat(X_rec).groupby(['sub','run', 'TR']).mean().reset_index()
@@ -251,7 +262,7 @@ def main():
     X.loc[np.isin(X['sub'], sub_even), ['y_per_norm', 'y_per_inv']] = X.loc[np.isin(X['sub'], sub_even), ['y_per_inv', 'y_per_norm']]
     
     # Save to file
-    filename_out = 'X.csv'
+    filename_out = './data/ppi_results.csv'
     X.to_csv(filename_out, index=False)
     print(f"Saved the final DataFrame to {filename_out}")
 

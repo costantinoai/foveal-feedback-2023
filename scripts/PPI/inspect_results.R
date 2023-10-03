@@ -1,320 +1,177 @@
-## Script Overview:
+#-------------------------------------------------------------------------
+# Script for fMRI Data Analysis using Linear Mixed-Effects Models
 #
-# This script loads and processes fMRI data from a CSV file and then 
-# conducts mixed-effects linear models to investigate the effect of various 
-# predictors on the dependent variable. 
-# It performs the following tasks:
-# 
-# 1. **Data Loading and Pre-processing**: Loads data from a CSV, prepares the 
-#    dataset by aggregating and transforming necessary variables.
-# 
-# 2. **Diagnostic Plots (commented out)**: Generates diagnostic plots to visualize 
-#    relationships between predictors and the dependent variable. 
+# Purpose:
+# This script performs the following tasks:
+# 1. Loads and preprocesses fMRI data from a provided CSV.
+# 2. Creates a series of linear mixed-effects models for specified predictors.
+# 3. Compares models with and without interaction terms using parallel bootstrapping.
+# 4. Extracts and prints model equations in LaTeX format.
 #
-# 3. **Mixed Linear Models**: Fits several mixed-effects linear models to the 
-#    data and provides detailed summaries.
-# 
-# 4. **Model Comparison**: Compares pairs of models to ascertain which provides 
-#    a better fit to the data.
+# Background:
+# Linear mixed-effects models are employed to handle both fixed and random effects in fMRI data.
+# This allows for the incorporation of subject-specific random effects which are essential 
+# given the high inter-subject variability in fMRI responses.
+# The primary aim is to evaluate the contribution of various predictors (e.g., y_per_norm, y_per_inv, etc.)
+# to the response variable (y_fov) while considering the interaction between the predictor and y_p.
 #
-# 5. **Report Summary**: Displays summary statistics of all fitted models.
+# Equations:
+# General form of the model equation used:
+# y_fov = y_p + predictor + y_ppi_predictor + random_effects + run + tx + ... + drift_n + 1
+# Where:
+# - y_fov is the response variable.
+# - predictor is the specific predictor under investigation.
+# - y_ppi_predictor is the interaction term between y_p and the predictor.
+# - random_effects include subject-specific random intercepts and slopes.
+# - run, tx, ..., drift_n are control variables.
 #
-# ## Dependencies:
-# 
+# The model equation for a given predictor, say 'y_per_norm', is represented as:
+# [y_fov] = β₀ + β₁[y_p] + β₂[y_per_norm] + β₃[y_ppi_y_per_norm] + random_effects + β₄[run] + ... + βₙ[drift_n]
+# Where:
+# β₀, β₁, ... are the fixed effect coefficients.
+# random_effects include subject-specific random intercepts and slopes for y_p and y_per_norm.
+# [run], ..., [drift_n] are control variables with their respective coefficients.
+# This equation is created for each predictor and the significance of the coefficients is evaluated.
+
+# When comparing two models, the key interest is in the p-value which indicates whether 
+# the interaction term (y_ppi_predictor) significantly improves the model fit.
+# A lower p-value (typically < 0.05) suggests that the interaction term is significant.
+
+# The 'extract_eq' function will produce the equation in LaTeX format which can be directly used 
+# for publication in the academic paper. Ensure to consult the generated equations for accuracy 
+# before inclusion in the paper.
+#
+# Dataset Structure:
+# Expected columns in the dataset include 'run', 'TR', 'y_fov', 'y_p', each predictor, and control variables.
+# - 'run' is expected to be a factor indicating the specific fMRI run.
+# - 'TR' indicates the repetition time.
+#
+# Note:
+# When using this script as supplementary material, ensure that the provided dataset follows the described structure.
+#
+# Dependencies:
 # - data.table
 # - ggplot2
 # - lme4
 # - lmerTest
 # - pbkrtest
 # - parallel
+#
+# Authors: Matthew Crossley
+# Edited: Andrea Costantino
+# Date: 03/10/2023
+# -----------------------------------------------------------
+# 1. Initialization: Load necessary libraries and set global options
 
+rm(list=ls())
 library(data.table)
 library(ggplot2)
 library(lme4)
 library(lmerTest)
 library(pbkrtest)
 library(parallel)
+ddf <- c('Satterthwaite') # Set up method for degrees of freedom calculation
+set.seed(42)
 
-## http://bbolker.github.io/mixedmodels-misc/glmmFAQ.html#ddf
-## https://stats.stackexchange.com/questions/20836/algorithms-for-automatic-model-selection
+# -----------------------------------------------------------
+# 2. Data Loading and Pre-processing
 
-## NOTE: prepare data
-X <- fread('X.csv')
-X[, V1 := NULL]
-X[, run := as.factor(run)]
-XX <- X[, lapply(.SD, mean), .(run, TR)]
+X <- fread('/home/eik-tb/OneDrive_andreaivan.costantino@kuleuven.be/GitHub/foveal-feedback-2023/data/ppi_results.csv') # Load the fMRI dataset
+# X[, V1 := NULL] # Remove the V1 column
+X[, run := as.factor(run)] # Convert 'run' column to factor type
+XX <- X[, lapply(.SD, mean), .(run, TR)] # Aggregate data by 'run' and 'TR'
 
-## NOTE: diagnostic plots
-## ggplot(data=X, aes(x=y_fov, y=y_ppi_loc, colour=as.factor(run))) +
-## ggplot(data=X, aes(x=y_fov, y=y_ppi_ffa)) +
-##   geom_point(alpha=0.2) +
-##   geom_smooth(method='lm') +
-##   facet_wrap(~sub, ncol=5)
+# -----------------------------------------------------------
+# 3. Diagnostic Plots (commented out for demonstration)
 
-## NOTE: mixed
-ddf <- c('Satterthwaite')
-## ddf <- c('Kenward-Roger')
+# Uncomment this block to generate and visualize diagnostic plots
+# ggplot(data=X, aes(x=y_fov, y=y_ppi_loc, colour=as.factor(run))) +
+# ggplot(data=X, aes(x=y_fov, y=y_ppi_ffa)) +
+#   geom_point(alpha=0.2) +
+#   geom_smooth(method='lm') +
+#   facet_wrap(~sub, ncol=5)
 
-fm_per_norm <- lmer(y_fov ~
-                      y_p +
-                      y_per_norm +
-                      y_ppi_per_norm +
-                      (0 + y_p|sub) +
-                      (0 + y_per_norm|sub) +
-                      (0 + y_ppi_per_norm|sub) +
-                      (1|sub) +
-                      run +
-                      tx + ty + tz +
-                      rx + ry + rz +
-                      drift_1 + drift_2 + drift_3 +
-                      1,
-                    data=X)
-summary(fm_per_norm, ddf=ddf)
+# -----------------------------------------------------------
+# 4. Mixed Linear Models
 
-fm_per_inv <- lmer(y_fov ~
-                      y_p +
-                      y_per_inv +
-                      y_ppi_per_inv +
-                      (0 + y_p|sub) +
-                      (0 + y_per_inv|sub) +
-                      (0 + y_ppi_per_inv|sub) +
-                      (1|sub) +
-                      run +
-                      tx + ty + tz +
-                      rx + ry + rz +
-                      drift_1 + drift_2 + drift_3 +
-                      1,
-                    data=X)
-summary(fm_per_inv, ddf=ddf)
+# List of predictors
+predictors <- c("y_per_norm", "y_per_inv", "y_loc", "y_ffa", "y_a1")
 
-fm_loc <- lmer(y_fov ~
-                      y_p +
-                      y_loc +
-                      y_ppi_loc +
-                      (0 + y_p|sub) +
-                      (0 + y_loc|sub) +
-                      (0 + y_ppi_loc|sub) +
-                      (1|sub) +
-                      run +
-                      tx + ty + tz +
-                      rx + ry + rz +
-                      drift_1 + drift_2 + drift_3 +
-                      1,
-                    data=X)
-summary(fm_loc, ddf=ddf)
+# Function to create a model for a given predictor
+create_model <- function(predictor, data) {
+  # Build the formula string for the model based on the predictor
+  formula_string <- paste0(
+    "y_fov ~ y_p + ", predictor, " + y_ppi_", sub("y_", "", predictor),
+    " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + y_ppi_", sub("y_", "", predictor), "|sub)",
+    " + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"
+  )
+  
+  # Convert the formula string to a formula object
+  formula_obj <- as.formula(formula_string)
+  
+  # Create the linear mixed-effects model with the constructed formula
+  model <- lmer(formula_obj, data = data)
+  
+  return(model)
+}
 
-fm_ffa <- lmer(y_fov ~
-                      y_p +
-                      y_ffa +
-                      y_ppi_ffa +
-                      (0 + y_p|sub) +
-                      (0 + y_ffa|sub) +
-                      (0 + y_ppi_ffa|sub) +
-                      (1|sub) +
-                      run +
-                      tx + ty + tz +
-                      rx + ry + rz +
-                      drift_1 + drift_2 + drift_3 +
-                      1,
-                    data=X)
-summary(fm_ffa, ddf=ddf)
+# Dictionary to store models
+model_dict <- list()
 
-fm_a1 <- lmer(y_fov ~
-                      y_p +
-                      y_a1 +
-                      y_ppi_a1 +
-                      (0 + y_p|sub) +
-                      (0 + y_a1|sub) +
-                      (0 + y_ppi_a1|sub) +
-                      (1|sub) +
-                      run +
-                      tx + ty + tz +
-                      rx + ry + rz +
-                      drift_1 + drift_2 + drift_3 +
-                      1,
-                    data=X)
-summary(fm_a1, ddf=ddf)
+# Loop through predictors, create models, and print summaries
+for(predictor in predictors){
+  model <- create_model(predictor, X)
+  model_dict[[predictor]] <- model  # Store the model for future use
+  
+  cat(paste0("Summary for ", predictor, ":\n"))
+  print(summary(model, ddf=ddf))
+}
 
-## NOTE: model comparison approach
-fm_per_norm_1 <- lmer(y_fov ~
-                        y_p +
-                        y_per_norm +
-                        y_ppi_per_norm +
-                        (0 + y_p|sub) +
-                        (0 + y_per_norm|sub) +
-                        (0 + y_ppi_per_norm|sub) +
-                        (1|sub) +
-                        run +
-                        tx + ty + tz +
-                        rx + ry + rz +
-                        drift_1 + drift_2 + drift_3 +
-                        1,
-                      data=X)
+# -----------------------------------------------------------
+# 5. Model Comparison - For each predictor, we'll compare two models to determine the better fit.
 
-fm_per_norm_2 <- lmer(y_fov ~
-                        y_p +
-                        y_per_norm +
-                        (0 + y_p|sub) +
-                        (0 + y_per_norm|sub) +
-                        (0 + y_ppi_per_norm|sub) +
-                        (1|sub) +
-                        run +
-                        tx + ty + tz +
-                        rx + ry + rz +
-                        drift_1 + drift_2 + drift_3 +
-                        1,
-                      data=X)
+# Function to create models for a given predictor
+create_models <- function(predictor, data){
+  # Corrected interaction term construction
+  interaction_term <- paste0("y_ppi_", sub("y_", "", predictor))
+  
+  # Model with interaction term
+  model_1_formula <- as.formula(paste0("y_fov ~ y_p + ", predictor, " + ", interaction_term, 
+                                       " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + ", interaction_term, "|sub) + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"))
+  model_1 <- lmer(model_1_formula, data = data)
+  
+  # Model without interaction term
+  model_2_formula <- as.formula(paste0("y_fov ~ y_p + ", predictor, 
+                                       " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + ", interaction_term, "|sub) + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"))
+  model_2 <- lmer(model_2_formula, data = data)
+  
+  return(list(model_1, model_2))
+}
 
-nc <- detectCores()
+# Function to perform model comparison
+compare_models <- function(model_1, model_2, cl){
+  return(pbkrtest::PBmodcomp(model_1, model_2, seed=0, nsim=5000, cl=cl))
+}
+
+# Detect number of CPU cores and create a cluster for parallel processing
+nc <- detectCores() 
 cl <- makeCluster(rep("localhost", nc))
-pb_per_norm <- pbkrtest::PBmodcomp(fm_per_norm_1, fm_per_norm_2, seed=0, nsim=5000, cl=cl)
 
-fm_per_inv_1 <- lmer(y_fov ~
-                       y_p +
-                       y_per_inv +
-                       y_ppi_per_inv +
-                       (0 + y_p|sub) +
-                       (0 + y_per_inv|sub) +
-                       (0 + y_ppi_per_inv|sub) +
-                       (1|sub) +
-                       run +
-                       tx + ty + tz +
-                       rx + ry + rz +
-                       drift_1 + drift_2 + drift_3 +
-                       1,
-                     data=X)
+# Lists to store models and results
+model_list <- list()
+results <- list()
 
-fm_per_inv_2 <- lmer(y_fov ~
-                       y_p +
-                       y_per_inv +
-                       (0 + y_p|sub) +
-                       (0 + y_per_inv|sub) +
-                       (0 + y_ppi_per_inv|sub) +
-                       (1|sub) +
-                       run +
-                       tx + ty + tz +
-                       rx + ry + rz +
-                       drift_1 + drift_2 + drift_3 +
-                       1,
-                     data=X)
+# Loop through predictors and conduct model comparisons
+for(predictor in predictors){
+  models <- create_models(predictor, X)
+  model_list[[predictor]] <- models[[1]]  # Store the model with interaction for summaries
+  results[[predictor]] <- compare_models(models[[1]], models[[2]], cl)
+  
+  # Display summaries and equations
+  cat(paste0("Summary for ", predictor, " (with interaction):\n"))
+  print(summary(model_list[[predictor]], ddf=ddf))
+  cat(paste0("Model comparison for ", predictor, ":\n"))
+  print(summary(results[[predictor]]))
+  
+}
 
-nc <- detectCores()
-cl <- makeCluster(rep("localhost", nc))
-pb_per_inv <- pbkrtest::PBmodcomp(fm_per_inv_1, fm_per_inv_2, seed=0, nsim=5000, cl=cl)
-
-fm_loc_1 <- lmer(y_fov ~
-                   y_p +
-                   y_loc +
-                   y_ppi_loc +
-                   (0 + y_p|sub) +
-                   (0 + y_loc|sub) +
-                   (0 + y_ppi_loc|sub) +
-                   (1|sub) +
-                   run +
-                   tx + ty + tz +
-                   rx + ry + rz +
-                   drift_1 + drift_2 + drift_3 +
-                   1,
-                 data=X)
-
-fm_loc_2 <- lmer(y_fov ~
-                   y_p +
-                   y_loc +
-                   (0 + y_p|sub) +
-                   (0 + y_loc|sub) +
-                   (0 + y_ppi_loc|sub) +
-                   (1|sub) +
-                   run +
-                   tx + ty + tz +
-                   rx + ry + rz +
-                   drift_1 + drift_2 + drift_3 +
-                   1,
-                 data=X)
-
-nc <- detectCores()
-cl <- makeCluster(rep("localhost", nc))
-pb_loc <- pbkrtest::PBmodcomp(fm_loc_1, fm_loc_2, seed=0, nsim=5000, cl=cl)
-
-fm_ffa_1 <- lmer(y_fov ~
-                   y_p +
-                   y_ffa +
-                   y_ppi_ffa +
-                   (0 + y_p|sub) +
-                   (0 + y_ffa|sub) +
-                   (0 + y_ppi_ffa|sub) +
-                   (1|sub) +
-                   run +
-                   tx + ty + tz +
-                   rx + ry + rz +
-                   drift_1 + drift_2 + drift_3 +
-                   1,
-                 data=X)
-
-fm_ffa_2 <- lmer(y_fov ~
-                   y_p +
-                   y_ffa +
-                   (0 + y_p|sub) +
-                   (0 + y_ffa|sub) +
-                   (0 + y_ppi_ffa|sub) +
-                   (1|sub) +
-                   run +
-                   tx + ty + tz +
-                   rx + ry + rz +
-                   drift_1 + drift_2 + drift_3 +
-                   1,
-                 data=X)
-
-nc <- detectCores()
-cl <- makeCluster(rep("localhost", nc))
-pb_ffa <- pbkrtest::PBmodcomp(fm_ffa_1, fm_ffa_2, seed=0, nsim=5000, cl=cl)
-
-fm_a1_1 <- lmer(y_fov ~
-                  y_p +
-                  y_a1 +
-                  y_ppi_a1 +
-                  (0 + y_p|sub) +
-                  (0 + y_a1|sub) +
-                  (0 + y_ppi_a1|sub) +
-                  (1|sub) +
-                  run +
-                  tx + ty + tz +
-                  rx + ry + rz +
-                  drift_1 + drift_2 + drift_3 +
-                  1,
-                data=X)
-
-fm_a1_2 <- lmer(y_fov ~
-                  y_p +
-                  y_a1 +
-                  (0 + y_p|sub) +
-                  (0 + y_a1|sub) +
-                  (0 + y_ppi_a1|sub) +
-                  (1|sub) +
-                  run +
-                  tx + ty + tz +
-                  rx + ry + rz +
-                  drift_1 + drift_2 + drift_3 +
-                  1,
-                data=X)
-
-nc <- detectCores()
-cl <- makeCluster(rep("localhost", nc))
-pb_a1 <- pbkrtest::PBmodcomp(fm_a1_1, fm_a1_2, seed=0, nsim=5000, cl=cl)
-
-# NOTE: report summary
-summary(fm_per_norm, ddf=ddf)
-summary(fm_per_inv, ddf=ddf)
-summary(fm_loc, ddf=ddf)
-summary(fm_ffa, ddf=ddf)
-summary(fm_a1, ddf=ddf)
-
-summary(pb_per_norm)
-summary(pb_per_inv)
-summary(pb_loc)
-summary(pb_ffa)
-summary(pb_a1)
-
-## NOTE: get model equations
-## library(equatiomatic)
-## extract_eq(fm)
-## extract_eq(get_model(s))
