@@ -43,7 +43,7 @@ python polynomial_regression.py
 @author: costantino_ai
 
 """
-
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -64,17 +64,28 @@ def filter_data(df):
     """
     # Define the comparisons and ROIs to include
     comparisons = [
-        "'face', 'vehicle'",
-        "'female', 'male'",
-        "'bike', 'car'",
-        "'bike', 'car', 'female', 'male'",
+        "('face', 'vehicle')",
+        "('female', 'male')",
+        "('bike', 'car')",
+        "('bike', 'car', 'female', 'male')",
     ]
-    rois = ["0.5", "1.0", "1.5", "2.0", "2.5", "3.0", "3.5", "4.0"]
+    rois = [
+        "Foveal 0.5°",
+        "Foveal 1°",
+        "Foveal 1.5°",
+        "Foveal 2°",
+        "Foveal 2.5°",
+        "Foveal 3°",
+        "Foveal 3.5°",
+        "Foveal 4°"
+        ]
     
     # Filter the data
     df_filtered = df[df["comparison"].isin(comparisons)]
     df_filtered = df_filtered[df_filtered["roi"].isin(rois)]
-    
+    # Extract the number between space and "°" and convert to float
+    df_filtered["roi"] = df_filtered["roi"].str.extract(r' (\d+(\.\d+)?)°')[0].astype(float)
+
     return df_filtered
 
 
@@ -106,7 +117,7 @@ def add_predicted_accuracy(df):
     model = smf.mixedlm("acc ~ roi + roi_2", data=df, groups=df["sub"]).fit()
     print(model.summary())
     df["acc_pred"] = model.predict()
-    model.summary().tables[1].to_csv("stats_" + df["comparison"].unique()[0] + ".csv")
+    model.summary().tables[1].to_csv("./res/MVPA/POLY-stats_" + df["comparison"].unique()[0] + ".csv")
     return df
 
 
@@ -153,7 +164,7 @@ def order_and_sort_data(df):
     
     return df_sorted
 
-
+import re
 def plot_data(df):
     """
     Plots the data in subplots based on comparison types.
@@ -166,6 +177,11 @@ def plot_data(df):
     ax_label = ["A", "B", "C", "D"]
 
     for i, comp in enumerate(df["comparison"].unique()):
+        
+        pattern = r"'(.*?)'"
+        matches = re.findall(pattern, comp)
+        title = f'{matches[0].capitalize()} vs. {matches[1].capitalize()}'
+        
         axx = ax[i]
         sns.lineplot(
             data=df[df["comparison"] == comp],
@@ -186,29 +202,30 @@ def plot_data(df):
         axx.set_xticks(np.sort(df["roi"].unique()))
         axx.set_xticklabels(
             [
-                r"$0.0\degree$",
                 r"$0.5\degree$",
-                r"$1.0\degree$",
+                r"$0.1\degree$",
                 r"$1.5\degree$",
                 r"$2.0\degree$",
                 r"$2.5\degree$",
                 r"$3.0\degree$",
+                r"$3.5\degree$",
                 r"$4.0\degree$",
             ],
             rotation=0,
         )
         axx.set_xlabel("")
         axx.set_ylabel("Accuracy")
-        axx.set_title(comp, fontsize=10)
+        axx.set_title(title, fontsize=10)
         axx.annotate(ax_label[i], xy=(-0.1, 1.1), xycoords="axes fraction", fontsize=12)
     plt.tight_layout()
-    plt.savefig("fig_classify_foveal_rois.pdf")
+    plt.savefig("./res/MVPA/POLY-fig_classify_foveal_rois.pdf")
     plt.close()
 
 
 if __name__ == '__main__':
+    os.makedirs("./res/PPI", exist_ok=True)
     # Load the data
-    data = pd.read_csv("res_long_format.csv")
+    data = pd.read_csv("./res/MVPA/res_long_format.csv")
     
     # Process and analyze the data
     filtered_data = filter_data(data)

@@ -96,19 +96,24 @@ def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
         # Store performance metrics and compute the confusion matrix
         performance_step[i] = clf.score(X_test, y_test)
         conf_mat[i] = confusion_matrix(y_test, y_hat)
-        
+
         # Output predictions and performance for the current step
         print(
             f"TRAINING BATCH: \t{list(y_train)} \nTRAINING PREDICTED: {list(y_hat_training)} \nTARGET: \t\t{list(y_test)} \nPREDICTED: \t{list(y_hat)}"
         )
-        print(f"TRAINING ACC: {performance_step[i]}, TEST ACC: {round(performance_step[i],2)}, STEP: {i+1}\n")
+        print(
+            f"TRAINING ACC: {performance_step[i]}, TEST ACC: {round(performance_step[i],2)}, STEP: {i+1}\n"
+        )
 
     # Calculate and output the average accuracy
     acc = np.average(performance_step)
     print(f"TOTAL ACCURACY: {acc}\n\n")
 
     # Return accuracy and the confusion matrix
-    return performance_step, conf_mat,
+    return (
+        performance_step,
+        conf_mat,
+    )
 
 
 def initialize_graph_dataframe(params):
@@ -156,7 +161,7 @@ def initialize_reports_and_results(params):
     return results
 
 
-def get_beta_subdir(conditions, pipeline_dir):
+def get_beta_subdir(conditions):
     """
     Get the sub-directory for beta values based on conditions.
 
@@ -168,9 +173,9 @@ def get_beta_subdir(conditions, pipeline_dir):
     str: A string indicating the sub-directory for beta values.
     """
     if ("face" in conditions) or ("vehicle" in conditions):
-        return pipeline_dir + "_fv"
+        return "desc-faces+vehicles"
     else:
-        return pipeline_dir + "_all"
+        return "desc-bike+car+female+male"
 
 
 def generate_timestamp():
@@ -251,21 +256,61 @@ def get_subject_id(sub_id):
 
 def get_mask_files(params, sub):
     """
-    Retrieve mask file paths for a given subject.
+    Retrieve mask file paths for a given subject based on the new directory structure.
 
     Args:
-    params (dict): Dictionary containing parameters.
-    sub (str): Formatted subject ID.
+    - params (dict): Dictionary containing parameters.
+      Expected key:
+        - 'rois_root': Root directory containing the ROI data.
+    - sub (str): Subject ID. For example: 'sub-02'.
 
     Returns:
-    dict: A dictionary with ROI names as keys and mask file paths as values.
-    """
-    return {
-        roi: glob.glob(
-            os.path.join(params["mask_root"], roi, "Linear", "resampled_nearest", sub + "*FOV*")
-        )[0]
-        for roi in params["rois"]
+    - dict: A dictionary with ROI names as keys and mask file paths as values.
+
+    Directory structure expected:
+    ├── rois_root
+    │   ├── {SUB}
+    │   │   ├── {SUB}_space-MNI152NLin2009cAsym_label-{ROI}_roi.nii
+
+    Example:
+
+    params = {
+        'rois_root': '/path/to/data/BIDS/derivatives/rois'
     }
+    masks = get_mask_files(params, 'sub-02')
+    print(masks)
+
+    """
+    
+    def format_roi_size(roi_label):
+        # Extract size from the FOV label
+        fov_size = roi_label.split('+')[-1]
+        roi_name = f"Foveal {fov_size[0]}.{fov_size[1]}°" if fov_size[1] != '0' else f"Foveal {fov_size[0]}°"
+        return roi_name
+
+    # Base path for the given subject
+    sub_path = os.path.join(params['rois_root'], sub)
+
+    # Gather all ROI paths for the given subject
+    roi_paths = glob.glob(os.path.join(sub_path, f"{sub}*label-*_roi.*nii"))
+    
+    masks = {}
+    for path in roi_paths:
+        roi_label = os.path.basename(path).split('_label-')[-1].split('_roi')[0]
+        
+        # Assign path based on the ROI label
+        if "FOV+" in roi_label:
+            masks[format_roi_size(roi_label)] = path
+        elif "FFA" in roi_label:
+            masks["FFA"] = path
+        elif "LOC" in roi_label:
+            masks["LOC"] = path
+        elif "OPP" in roi_label:
+            masks["Opposite"] = path
+        elif "PER" in roi_label:
+            masks["Peripheral"] = path
+
+    return masks
 
 
 def get_beta_dataframes(beta_loc):
@@ -278,22 +323,21 @@ def get_beta_dataframes(beta_loc):
     Returns:
     DataFrame: A pandas DataFrame with information about beta values.
     """
+    
     # Initialize dataframe
     betas_df = pd.DataFrame(
         None,
         columns=("beta_path", "spm_filename", "condition", "run", "bin", "array"),
     )
-    betas_df["beta_path"] = sorted(glob.glob(os.path.join(beta_loc, "beta*.?ii")))
+    betas_df["beta_path"] = sorted(glob.glob(os.path.join(beta_loc, "*beta*.?ii")))
 
     # Load SPM.mat data
     mat = loadmat(os.path.join(beta_loc, "SPM.mat"))
 
     # Extract relevant information from the mat data
     matching_indices = [
-        beta_id
-        for beta_id in range(len(betas_df["beta_path"]))
-        if str(mat["SPM"]["Vbeta"][0][0][0][beta_id][0][0])
-        == os.path.basename(betas_df["beta_path"][beta_id])
+    idx for idx in range(len(mat["SPM"]["Vbeta"][0][0][0]))
+    if any(str(mat["SPM"]["Vbeta"][0][0][0][idx][0][0]) in os.path.basename(path) for path in betas_df["beta_path"])
     ]
 
     betas_df["spm_filename"] = [
@@ -398,14 +442,14 @@ def calculate_ttest_statistics(params, conditions, roi):
     dict: A dictionary containing t-test statistics (t, p, avg, std, and d values).
     """
     labels_n = len(conditions)
-    
+
     data = np.array(params["results"]["classification"][conditions][roi]["acc"])
     data = np.average(data, axis=1)
-    
+
     # Perform t-test
     t, p = ttest_1samp(
         data,
-        popmean= 1 / labels_n,
+        popmean=1 / labels_n,
         alternative="greater",
     )
     avg, std = np.average(data), np.std(data)
@@ -472,7 +516,7 @@ def update_graph_dataframe(params, conditions, roi, stats):
     return params["results"]["graph_df"]
 
 
-def prepare_data_for_plotting(params):
+def prepare_data_for_plotting(params, selected_rois):
     """
     Prepare the dataframe for plotting by collating relevant data from the provided parameters.
 
@@ -483,33 +527,32 @@ def prepare_data_for_plotting(params):
     - data_all (DataFrame): A structured dataframe containing columns for comparison, ROI, subject number, accuracy, and ordering.
     """
 
-    # Once all rows are accumulated in the rows_list, convert it into a pandas DataFrame.
-    # This approach ensures that we construct the DataFrame only once, making it efficient.
-    agg_data = params["results"]["graph_df"]
-
+    graph_df = params['results']['graph_df']
+    agg_data = graph_df[graph_df['roi'].isin(selected_rois)]
+    
     # Assign order numbers to each row in the DataFrame based on the comparison type.
-    # The 'map' function maps each value in the 'comparison' column to its corresponding order number.
     agg_data["order"] = agg_data["comparison"].apply(get_order)
 
+    # Convert the 'roi' column to a categorical data type with custom order
+    agg_data['roi'] = pd.Categorical(agg_data['roi'], categories=selected_rois, ordered=True)
+
     # Sort the DataFrame based on the 'roi' and 'order' columns.
-    # This ensures that the data is ordered first by the region of interest, and then by the comparison type.
     agg_data = agg_data.sort_values(["roi", "order"], axis=0)
 
     # Convert 'comparison' column to string
     agg_data["comparison"] = agg_data["comparison"].astype(str)
 
     # Reset the index of the DataFrame.
-    # This ensures that the row indices are consecutive integers, starting from 0.
     agg_data = agg_data.reset_index(drop=True)
 
     return agg_data
 
 
-def plot_data(params):
-    agg_data = prepare_data_for_plotting(params)
+def plot_data(params, selected_rois):
+    agg_data = prepare_data_for_plotting(params, selected_rois)
     ax = plot_bars(agg_data)
     plot_error_bars(ax, agg_data)
-    annotate_significance(params, ax, agg_data)
+    annotate_significance(ax, agg_data)
     save_and_show(params)
 
 
@@ -548,6 +591,7 @@ def plot_bars(agg_data):
     plt.ylim((0.2, 1))
     plt.axhline(0.5, alpha=0.8, color="blue", ls="--", zorder=4)  # Blue dashed line at y=0.5
     plt.axhline(0.25, alpha=0.8, color="red", ls="--", zorder=4)  # Red dashed line at y=0.25
+    plt.xticks(rotation=30)
     ax.set_ylabel("acc")
     ax.set_xlabel("ROI")
     ax.set_title("Classifier accuracy")
@@ -589,11 +633,13 @@ def plot_error_bars(ax, data_all):
         x=x_pos, y=y_pos, yerr=yerr, fmt="none", c="black", capsize=5  # , palette="Paired"
     )
 
+
 # Order the graph dataframe based on the comparison ordering
 def get_order(comparison):
     return PLOT_COMPARISONS_ORDER.get(comparison, -1)
-    
-def annotate_significance(params, ax, data_all):
+
+
+def annotate_significance(ax, data_all):
     """
     Annotate a given plot with significance markers based on the parameters and data provided.
 
@@ -608,14 +654,6 @@ def annotate_significance(params, ax, data_all):
     Returns:
     None. The plot (`ax`) is modified in-place with added annotations.
     """
-
-    # Order the graph dataframe based on the comparison ordering
-    params["results"]["graph_df"]["order"] = params["results"]["graph_df"]["comparison"].apply(
-        get_order
-    )
-    params["results"]["graph_df"] = (
-        params["results"]["graph_df"].sort_values(["roi", "order"], axis=0).reset_index(drop=True)
-    )
 
     # Determine x positions for annotations
     x_pos = np.array(
@@ -635,7 +673,7 @@ def annotate_significance(params, ax, data_all):
     yerr = list(data_all["sem"])
 
     # Loop through p-values to determine the significance annotation
-    for i, p in enumerate(params["results"]["graph_df"]["p"]):
+    for i, p in enumerate(data_all["p"]):
         # Determine the annotation string based on significance levels
         if p < 0.001:
             displaystring = r"***"
@@ -657,8 +695,8 @@ def annotate_significance(params, ax, data_all):
 
 def save_and_show(params):
     """Save the figure and display it."""
-    if params["log"]:
-        plt.savefig(os.path.join(params["out_dir"], "all_sem.png"))
+    if params["log"] == True:
+        plt.savefig(os.path.join(params["out_dir"], "mvpa_plot.pdf"), format="pdf", dpi=300)
         print(f"STEP: figures saved in {params['out_dir']}")
     plt.show()
 
@@ -734,7 +772,6 @@ def print_stats_for_rois(params):
             # Print the formatted statistical result for the current ROI and condition
             print(f"{comp_name}, {bar_color} bar: $t(23) = {t_val}, p {p_string}, d = {d_val}$;")
 
-
 def get_p_string(p_val):
     """
     Convert p-value into a formatted string.
@@ -790,17 +827,18 @@ def set_seed(seed=42):
     random.seed(seed)  # Seed for Python's random module
     np.random.seed(seed)  # Seed for NumPy
 
+
 def extract_data_to_dataframe(params):
     """
     Extract data from nested dictionaries and create a pandas DataFrame.
-    
-    Given a nested dictionary structure from `params` with keys ['results']['classification'], 
-    this function processes the data and transforms it into a long format DataFrame 
+
+    Given a nested dictionary structure from `params` with keys ['results']['classification'],
+    this function processes the data and transforms it into a long format DataFrame
     with columns: 'sub', 'roi', 'comparison', 'fold', and 'acc'.
-    
-    If `log` parameter in `params` is set to True, the function will save the dataframe as 
+
+    If `log` parameter in `params` is set to True, the function will save the dataframe as
     a CSV file in the directory specified by `out_root` with the filename `res_long_format_FOVEAL.csv`.
-    
+
     Parameters:
     - params (dict): A dictionary containing the nested structure with classification results.
                      Expected structure:
@@ -815,58 +853,68 @@ def extract_data_to_dataframe(params):
                              }
                          }
                      }
-    
+
     Returns:
     - pd.DataFrame: A long format dataframe with columns 'sub', 'roi', 'comparison', 'fold', and 'acc'.
     """
-    
+
+    ## LONG DATA FORMAT
     rows = []
 
     # Extract the classification results from the params dictionary
-    results = params['results']['classification']
+    results = params["results"]["classification"]
 
     # Iterate over each comparison in the results
     for comparison in results.keys():
         comparison_dict = results[comparison]
-        
+
         # Iterate over each region of interest (roi) for the current comparison
         for roi in comparison_dict.keys():
-            roi_dict = comparison_dict[roi]['acc']
-            
+            roi_dict = comparison_dict[roi]["acc"]
+
             # Iterate over each id in the roi dictionary
             for id_ in range(len(roi_dict)):
                 sub_id = id_ + 2  # Compute the sub_id by adding 2 to the current id_
                 sub_row = roi_dict[id_]
-                
+
                 # Iterate over each fold for the current id in roi dictionary
                 for fold_n in range(len(sub_row)):
                     fold_acc = sub_row[fold_n]  # Extract the fold accuracy for the current fold
-                    rows.append([sub_id, roi, comparison, fold_n, fold_acc])  # Append data to rows list
+                    rows.append(
+                        [sub_id, roi, comparison, fold_n, fold_acc]
+                    )  # Append data to rows list
 
     # Convert the rows list to a pandas DataFrame
-    results_df_long = pd.DataFrame(data=rows, columns=['sub', 'roi', 'comparison', 'fold', 'acc'])
-    
+    results_df_long = pd.DataFrame(data=rows, columns=["sub", "roi", "comparison", "fold", "acc"])
+
     # Check if log parameter is True
-    if params['log'] == True:
+    if params["log"] == True:
         # Construct the complete file path for the CSV file
-        file_path = os.path.join(params['out_dir'], 'res_long_format_FOVEAL.csv')
-        
+        file_path = os.path.join(params["out_dir"], "res_long_format.csv")
+
         # Save the dataframe as CSV
         results_df_long.to_csv(file_path, index=False)
-    
+
+    ## T-STATS
+    stats_df = params['results']['graph_df']
+    if params["log"] == True:
+        # Construct the complete file path for the CSV file
+        file_path = os.path.join(params["out_dir"], "ttest_stats.csv")
+
+        # Save the dataframe as CSV
+        stats_df.to_csv(file_path, index=False)
+
     return results_df_long
 
+
 # Define the new root directory
-derivatives_bids = "/media/costantino_ai/Samsung_T5/2exp_fMRI/Exp/Data/Data/fmri/BIDS/derivatives"
+derivatives_bids = "./data/BIDS/derivatives"
 
 # Parameters
 params = {
-    "out_root": r"./res/MVPA",
-    "beta_root": os.path.join(derivatives_bids, "SPM"),
-    "mask_root": os.path.join(
-        derivatives_bids, "masks", "original", "original_realignedMNI", "fov"
-    ),
-    "pipeline_dir": "RSA_blocks_1_lev_6HMP",
+    "out_dir": r"./res/MVPA",
+    "beta_root": os.path.join(derivatives_bids, "SPMglm-fmriprep"),
+    "rois_root": os.path.join(derivatives_bids, "rois"),
     "conditions_list": [
         ("face", "vehicle"),
         ("female", "male"),
@@ -880,9 +928,19 @@ params = {
 }
 
 params["rois"] = [
-    os.path.split(path)[-1] for path in glob.glob(os.path.join(params["mask_root"], "?.?"))
+    "Foveal 0.5°",
+    "Foveal 1°",
+    "Foveal 1.5°",
+    "Foveal 2°",
+    "Foveal 2.5°",
+    "Foveal 3°",
+    "Foveal 3.5°",
+    "Foveal 4°",
+    "Peripheral",
+    "Opposite",
+    "FFA",
+    "LOC",
 ]
-params["out_dir"] = os.path.join(params["out_root"], "foveal")
 
 # Define a dictionary that maps comparison conditions to specific order numbers.
 # This is useful for determining the order in which data points should be plotted.
@@ -906,23 +964,21 @@ params["results"]["classification"] = initialize_reports_and_results(params)
 
 for conditions in params["conditions_list"]:
     # Get paths of beta images used for classification
-    beta_subdir = get_beta_subdir(conditions, params["pipeline_dir"])
+    task_subdir = get_beta_subdir(conditions)
 
     # Setup logging for current comparison
     logfile, params["ts"] = setup_logging(params, conditions)
-    
+
     # Print env check and parameters
     set_seed(params["seed"])
     env_check()
     print_dict(params)
 
     print(f"START: {datetime.now()} - Logging = {params['log']}")
-    print(f"STEP: pipeline_dir = {params['pipeline_dir']}")
 
     # SELECT BETAS
     for sub_id in range(2, 26):
         sub = get_subject_id(sub_id)
-        beta_loc = os.path.join(params["beta_root"], beta_subdir, sub)
 
         print(f"STEP: {sub} - starting classification for {conditions}")
         print("STEP: loading masks...", end="\r")
@@ -930,6 +986,7 @@ for conditions in params["conditions_list"]:
         print("done!")
 
         print("STEP: generating beta mapping dataframe...", end="\r")
+        beta_loc = os.path.join(params["beta_root"], task_subdir, sub)
         betas_df = get_beta_dataframes(beta_loc)
         betas_df = filter_and_sort_betas(betas_df, conditions)
         print("done!")
@@ -939,15 +996,20 @@ for conditions in params["conditions_list"]:
         print("done!")
 
         for roi_name in mask_files.keys():
-            
-            print("STEP: preparing dataset for classification (zeroing NaNs, shuffling)...", end="\r")
+            print(
+                "STEP: preparing dataset for classification (zeroing NaNs, shuffling)...", end="\r"
+            )
             X, y, runs_idx = prepare_dataset_for_classification(betas_df, mask_files, roi_name)
             print("done!")
 
-            acc_long, conf_mat_long = perform_classification(X, y, runs_idx, roi_name, conditions, sub)
-            
+            acc_long, conf_mat_long = perform_classification(
+                X, y, runs_idx, roi_name, conditions, sub
+            )
+
             params["results"]["classification"][conditions][roi_name]["acc"].append(acc_long)
-            params["results"]["classification"][conditions][roi_name]["confmat"].append(conf_mat_long)
+            params["results"]["classification"][conditions][roi_name]["confmat"].append(
+                conf_mat_long
+            )
 
     # PERFORM T-TEST
     for roi in params["rois"]:
@@ -957,14 +1019,22 @@ for conditions in params["conditions_list"]:
 
 print("STEP: preparing and plotting figures...", end="\r")
 
+# PRINT STATS
+print_stats_for_rois(params)
+
 # PLOT DATA
-plot_data(params)
+selected_rois = [
+    "FFA",
+    "LOC",
+    "Opposite",
+    "Peripheral",
+    "Foveal 2°",
+]
+
+plot_data(params, selected_rois)
 
 # SAVE LONG FORMAT CSV
-long_df = extract_data_to_dataframe(params)            
+long_df = extract_data_to_dataframe(params)
 
 # SAVE PICKLE FILE
 save_results_to_file(params)
-
-## PRINT STATS
-print_stats_for_rois(params)
