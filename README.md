@@ -10,13 +10,13 @@ This repository is dedicated to the statistical analyses of functional magnetic 
 ### 📁 **Directory Structure**:
 More information about the scripts can be found in each script's docstring.
 
-├── data/
-│ └── res_long_format.csv : Contains preprocessed fMRI data and MVPA results.
-├── scripts/
-│ ├── MVPA/ : Scripts related to MVPA analysis.
-│ │  └── polynomial_regression.py : Performs polynomial regression on MVPA results.
-│ ├── model/ : Scripts dedicated to training/testing models and extracting activations.
-│ └── PPA/
+├── data/  
+│ └── res_long_format.csv : Contains preprocessed fMRI data and MVPA results.  
+├── scripts/  
+│ ├── MVPA/ : Scripts related to MVPA analysis.  
+│ │  └── polynomial_regression.py : Performs polynomial regression on MVPA results.  
+│ ├── model/ : Scripts dedicated to training/testing models and extracting activations.  
+│ └── PPA/  
 
 
 
