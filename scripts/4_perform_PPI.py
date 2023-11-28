@@ -19,13 +19,9 @@ This script loads and processes fMRI data, conducts statistical analyses, and sa
 
 5. **Applying PCA and Extracting Signal**: Applies Principal Component Analysis (PCA) to the data and extracts signals using binary masks.
 
-6. **OLS Analysis**: Conducts Ordinary Least Squares (OLS) analysis with specified regressors and prints the results.
+6. **Performing PPI**.
 
-7. **Main Function**: Orchestrates the entire data processing and analysis pipeline.
-
-8. **Post Processing**: Further processes the data and calculates PPI terms.
-
-9. **Saving Results**: Saves the final DataFrame to a CSV file.
+6. **Saving Results**: Saves the final DataFrame to a CSV file.
 
 ## Dependencies:
 
@@ -46,10 +42,10 @@ import pandas as pd
 import nibabel as nib
 from nilearn.glm.first_level import make_first_level_design_matrix
 from sklearn.decomposition import PCA
-import statsmodels.formula.api as smf
 import os
 import scipy.io
 import warnings
+import concurrent.futures
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -72,7 +68,7 @@ def load_roi_images(subject, dir_rois):
         "opp": glob.glob(os.path.join(dir_rois, "sub-" + subject, "*label-OPP_roi.nii"))[0],
         "ffa": glob.glob(os.path.join(dir_rois, "sub-" + subject, "*label-FFA_roi.nii"))[0],
         "loc": glob.glob(os.path.join(dir_rois, "sub-" + subject, "*label-LOC_roi.nii"))[0],
-        # 'a1': glob.glob(os.path.join(dir_rois, "sub-"+subject, '*label-A1_roi.nii'))[0]
+        # "a1": glob.glob(os.path.join(dir_rois, "sub-"+subject, '*label-A1_roi.nii'))[0]
     }
 
     for roi_name, path in paths.items():
@@ -194,96 +190,110 @@ def apply_pca_and_extract_signal(data, mask):
     return transformed_data, pca.explained_variance_ratio_[0]
 
 
-def main():
-    bids_root = "./data/BIDS/"
-    dir_rois = os.path.join(bids_root, "derivatives", "rois")
-    fmriprep_dir = os.path.join(bids_root, "derivatives", "fMRIprep")
+def process_run(sub, run):
+    
+        print(f"STEP: Processing subject {sub}, run {run}\n")
+    
+        # Load functional images (and skip iteration if no func is found)
+        func_img_data = load_functional_images(sub, run, sub_fmriprep_dir)
 
-    # List of subjects
-    subjects = [str(i).zfill(2) for i in range(2, 26)]
+        if func_img_data is None:
+            print(f"WARNING: No functional image found for {sub}, run {run}.. SKIPPING.")
+            pass
 
-    X_rec = []
+        n_scans = func_img_data.shape[-1]  # Number of time frames in the functional data
+        func_img = np.reshape(
+            func_img_data, (-1, n_scans)
+        ).T  # Reshape to (n_samples, n_features)
+        # print(f"\tLoaded functional data for subject {sub}, run {run} with {n_scans} scans")
 
-    for sub in subjects:
-        # Load ROIs
-        rois = load_roi_images(sub, dir_rois)
-        print("=" * 40)
-        for run in range(1, 6):
-            print(f"STEP: Processing subject {sub}, run {run}")
+        # Load events
+        sub_bids_dir = os.path.join(bids_root, "sub-" + sub, "func")
+        events = load_and_process_events(sub, run, sub_bids_dir)
+        # print(f"\tLoaded event data for subject {sub}, run {run}")
 
-            # Load functional images (and skip iteration if no func is found)
-            sub_fmriprep_dir = os.path.join(fmriprep_dir, "sub-" + sub, "func")
-            func_img_data = load_functional_images(sub, run, sub_fmriprep_dir)
-
-            if func_img_data is None:
-                print(f"WARNING: No functional image found for {sub}, run {run}.. SKIPPING.")
-                continue
-
-            n_scans = func_img_data.shape[-1]  # Number of time frames in the functional data
-            func_img = np.reshape(
-                func_img_data, (-1, n_scans)
-            ).T  # Reshape to (n_samples, n_features)
-            print(f"\tLoaded functional data for subject {sub}, run {run} with {n_scans} scans")
-
-            # Load events
-            sub_bids_dir = os.path.join(bids_root, "sub-" + sub, "func")
-            events = load_and_process_events(sub, run, sub_bids_dir)
-            print(f"\tLoaded event data for subject {sub}, run {run}")
-
-            # Load motion confounds
-            motion = np.loadtxt(
-                os.path.join(
-                    sub_fmriprep_dir, f"sub-{sub}_task-exp_run-{run}_desc-6HMP_regressors.txt"
-                )
+        # Load motion confounds
+        motion = np.loadtxt(
+            os.path.join(
+                sub_fmriprep_dir, f"sub-{sub}_task-exp_run-{run}_desc-6HMP_regressors.txt"
             )
-            print(f"\tLoaded motion confounds for subject {sub}, run {run}")
+        )
+        # print(f"\tLoaded motion confounds for subject {sub}, run {run}")
 
-            # Verify that the motion data's length matches the number of time frames in the functional data
-            assert (
-                motion.shape[0] == n_scans
-            ), "Mismatch between number of time frames in the functional data and motion regressors."
+        # Verify that the motion data's length matches the number of time frames in the functional data
+        assert (
+            motion.shape[0] == n_scans
+        ), "Mismatch between number of time frames in the functional data and motion regressors."
 
-            # Create design matrix
-            tr = 2.0
-            frame_times = np.arange(n_scans) * tr
-            X = make_design_matrix(events, motion, frame_times)
-            print(f"\tCreated design matrix for subject {sub}, run {run}")
+        # Create design matrix
+        tr = 2.0
+        frame_times = np.arange(n_scans) * tr
+        X = make_design_matrix(events, motion, frame_times)
+        # print(f"\tCreated design matrix for subject {sub}, run {run}")
 
-            # Apply PCA and extract signals
-            for roi_name, mask in rois.items():
-                signal, exp_var = apply_pca_and_extract_signal(func_img, mask)
-                X[f"y_{roi_name}"] = signal
-                X[f"exp_var_{roi_name}"] = exp_var
-                print(f"\tApplied PCA for ROI {roi_name} in subject {sub}, run {run}")
+        # Apply PCA and extract signals
+        for roi_name, mask in rois.items():
+            signal, exp_var = apply_pca_and_extract_signal(func_img, mask)
+            X[f"y_{roi_name}"] = signal
+            X[f"exp_var_{roi_name}"] = exp_var
+            # print(f"\tApplied PCA for ROI {roi_name} in subject {sub}, run {run}")
 
-            X["sub"] = sub
-            X["run"] = run
+        X["sub"] = sub
+        X["run"] = run
 
-            # PPI terms
-            ppi_mult = 2 * X["y_p"] - 1
-            for roi_name in rois:
-                X[f"y_ppi_{roi_name}"] = ppi_mult * X[f"y_{roi_name}"]
-                print(f"\tCalculated PPI term for ROI {roi_name} in subject {sub}, run {run}")
+        # PPI terms
+        ppi_mult = 2 * X["y_p"] - 1
+        for roi_name in rois:
+            X[f"y_ppi_{roi_name}"] = ppi_mult * X[f"y_{roi_name}"]
+            # print(f"\tCalculated PPI term for ROI {roi_name} in subject {sub}, run {run}")
 
-            X["TR"] = X.index // 2
-
-            # Append to the record
-            X_rec.append(X)
-            print(f"DONE: Finished processing subject {sub}, run {run}")
-            print("-" * 40)
-
-    # Post processing
-    X = pd.concat(X_rec).groupby(["sub", "run", "TR"]).mean().reset_index()
-    sub_even = [subject for subject in subjects if int(subject) % 2 == 0]
-    X.loc[np.isin(X["sub"], sub_even), ["y_per_norm", "y_per_inv"]] = X.loc[
-        np.isin(X["sub"], sub_even), ["y_per_inv", "y_per_norm"]
-    ]
-
-    # Save to file
-    filename_out = "./res/PPI/ppi_results.csv"
-    X.to_csv(filename_out, index=False)
-    print(f"Saved the final DataFrame to {filename_out}")
+        X["TR"] = X.index // 2
+        
+        print(f"DONE: Finished processing subject {sub}, run {run}\n")
+        # print("-" * 40)
+        
+        return X
 
 
 # Run the main function
-main()
+bids_root = "/data/projects/fov/data/BIDS"
+dir_rois = os.path.join(bids_root, "derivatives", "rois")
+fmriprep_dir = os.path.join(bids_root, "derivatives", "fMRIprep")
+out_dir = "./res/PPI/"
+os.makedirs(out_dir, exist_ok=True)
+
+# List of subjects
+subjects = [str(i).zfill(2) for i in range(2, 26)]
+# subjects = [str(i).zfill(2) for i in range(2,4)]
+
+X_rec = []
+
+for sub in subjects:
+    # Load ROIs
+    rois = load_roi_images(sub, dir_rois)
+    print("=" * 40)
+    
+    # Identify directories and files
+    expression = '*_task-exp_run-*_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz'
+    sub_fmriprep_dir = os.path.join(fmriprep_dir, "sub-" + sub, "func")
+    
+    # Total number of runs
+    runs_n = len(glob.glob(os.path.join(sub_fmriprep_dir, expression)))
+    
+    # Using ProcessPoolExecutor
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        # Collect all future objects
+        futures = [executor.submit(process_run, sub, run) for run in range(1, runs_n + 1)]
+        
+        # As each future completes, append its result to X_rec
+        for future in concurrent.futures.as_completed(futures):
+            X_rec.append(future.result())
+    
+
+# Post processing
+X = pd.concat(X_rec).groupby(["sub", "run", "TR"]).mean().reset_index()
+
+# Save to file
+filename_out = os.path.join(out_dir, "ppi_results.csv")
+X.to_csv(filename_out, index=False)
+print(f"Saved the final DataFrame to {filename_out}")

@@ -12,7 +12,7 @@
 # Linear mixed-effects models are employed to handle both fixed and random effects in fMRI data.
 # This allows for the incorporation of subject-specific random effects which are essential 
 # given the high inter-subject variability in fMRI responses.
-# The primary aim is to evaluate the contribution of various predictors (e.g., y_per_norm, y_per_inv, etc.)
+# The primary aim is to evaluate the contribution of various predictors (e.g., y_per, y_opp, etc.)
 # to the response variable (y_fov) while considering the interaction between the predictor and y_p.
 #
 # Equations:
@@ -25,11 +25,11 @@
 # - random_effects include subject-specific random intercepts and slopes.
 # - run, tx, ..., drift_n are control variables.
 #
-# The model equation for a given predictor, say 'y_per_norm', is represented as:
-# [y_fov] = β₀ + β₁[y_p] + β₂[y_per_norm] + β₃[y_ppi_y_per_norm] + random_effects + β₄[run] + ... + βₙ[drift_n]
+# The model equation for a given predictor, say 'y_per', is represented as:
+# [y_fov] = β₀ + β₁[y_p] + β₂[y_per] + β₃[y_ppi_y_per] + random_effects + β₄[run] + ... + βₙ[drift_n]
 # Where:
 # β₀, β₁, ... are the fixed effect coefficients.
-# random_effects include subject-specific random intercepts and slopes for y_p and y_per_norm.
+# random_effects include subject-specific random intercepts and slopes for y_p and y_per.
 # [run], ..., [drift_n] are control variables with their respective coefficients.
 # This equation is created for each predictor and the significance of the coefficients is evaluated.
 
@@ -76,7 +76,7 @@ set.seed(42)
 # -----------------------------------------------------------
 # 2. Data Loading and Pre-processing
 
-X <- fread('/home/eik-tb/OneDrive_andreaivan.costantino@kuleuven.be/GitHub/foveal-feedback-2023/data/ppi_results.csv') # Load the fMRI dataset
+X <- fread('/home/eik-tb/OneDrive_andreaivan.costantino@kuleuven.be/GitHub/foveal-feedback-2023/res/PPI/ppi_results.csv') # Load the fMRI dataset
 # X[, V1 := NULL] # Remove the V1 column
 X[, run := as.factor(run)] # Convert 'run' column to factor type
 XX <- X[, lapply(.SD, mean), .(run, TR)] # Aggregate data by 'run' and 'TR'
@@ -95,7 +95,8 @@ XX <- X[, lapply(.SD, mean), .(run, TR)] # Aggregate data by 'run' and 'TR'
 # 4. Mixed Linear Models
 
 # List of predictors
-predictors <- c("y_per_norm", "y_per_inv", "y_loc", "y_ffa", "y_a1")
+# predictors <- c("y_per", "y_opp", "y_loc", "y_ffa", "y_a1")
+predictors <- c("y_per", "y_opp", "y_loc", "y_ffa")
 
 # Function to create a model for a given predictor
 create_model <- function(predictor, data) {
@@ -118,13 +119,40 @@ create_model <- function(predictor, data) {
 # Dictionary to store models
 model_dict <- list()
 
-# Loop through predictors, create models, and print summaries
+# Initialize an empty data frame to store results
+results_df <- data.frame(Predictor = character(),
+                         Beta = numeric(),
+                         CI_Lower = numeric(),
+                         CI_Upper = numeric(),
+                         stringsAsFactors = FALSE)
+
+# Loop through predictors, create models, and extract summaries
 for(predictor in predictors){
   model <- create_model(predictor, X)
   model_dict[[predictor]] <- model  # Store the model for future use
   
   cat(paste0("Summary for ", predictor, ":\n"))
-  print(summary(model, ddf=ddf))
+  model_summary <- summary(model)
+  print(model_summary)
+  
+  # # Compute confidence intervals
+  # ci <- confint(model, method = "profile")
+  # 
+  # # Extract and store coefficients and confidence intervals
+  # beta_coeffs <- fixef(model)
+  # for(term in names(beta_coeffs)) {
+  #   beta <- beta_coeffs[term]
+  #   ci_lower <- ci[term, 1]
+  #   ci_upper <- ci[term, 2]
+  #   
+  #   # Append to the dataframe
+  #   results_df <- rbind(results_df, data.frame(
+  #     Predictor = term,
+  #     Beta = beta,
+  #     CI_Lower = ci_lower,
+  #     CI_Upper = ci_upper
+  #   ))
+  # }
 }
 
 # -----------------------------------------------------------
@@ -174,4 +202,7 @@ for(predictor in predictors){
   print(summary(results[[predictor]]))
   
 }
+
+write.csv(results_df, "./res/PPI/R_results.csv", row.names = FALSE)
+
 
