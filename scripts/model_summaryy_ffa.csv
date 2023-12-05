@@ -1,0 +1,44 @@
+Linear mixed model fit by REML. t-tests use Satterthwaite's method [
+lmerModLmerTest]
+Formula: formula_obj
+   Data: data
+
+REML criterion at convergence: 21436.3
+
+Scaled residuals: 
+    Min      1Q  Median      3Q     Max 
+-3.5627 -0.6764 -0.0775  0.6693  5.0260 
+
+Random effects:
+ Groups   Name        Variance  Std.Dev.
+ sub      y_p         0.0006165 0.02483 
+ sub.1    y_ffa       0.1756681 0.41913 
+ sub.2    y_ppi_ffa   0.0040143 0.06336 
+ sub.3    (Intercept) 0.0000000 0.00000 
+ Residual             0.7181403 0.84743 
+Number of obs: 8514, groups:  sub, 8
+
+Fixed effects:
+              Estimate Std. Error         df t value Pr(>|t|)    
+(Intercept)   -0.05126    0.02992 8133.57127  -1.713 0.086676 .  
+y_p            0.10361    0.02610   86.17769   3.970 0.000148 ***
+y_ffa          0.27834    0.14871    6.99869   1.872 0.103430    
+y_ppi_ffa     -0.02377    0.02515    6.98088  -0.945 0.376089    
+run2           0.02910    0.02987 8105.86298   0.974 0.329897    
+run3          -0.05888    0.03058 6543.00166  -1.926 0.054192 .  
+run4          -0.04251    0.02993 7528.31385  -1.420 0.155513    
+run5          -0.03003    0.03170 5871.79881  -0.947 0.343446    
+tx             0.22517    0.18184  869.24632   1.238 0.215946    
+ty             0.64404    0.06344  692.40876  10.153  < 2e-16 ***
+tz            -0.34850    0.03245 2241.42102 -10.739  < 2e-16 ***
+rx           -21.13511    1.85216 1555.25128 -11.411  < 2e-16 ***
+ry            12.42173    3.58772  162.54179   3.462 0.000685 ***
+rz            30.22838    6.58277 1446.70999   4.592 4.77e-06 ***
+drift_1        0.27050    0.03916 8324.90266   6.908 5.29e-12 ***
+drift_2        0.88706    0.13165 8427.07791   6.738 1.71e-11 ***
+drift_3       -0.96208    0.50149 8250.45305  -1.918 0.055090 .  
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+optimizer (nloptwrap) convergence code: 0 (OK)
+boundary (singular) fit: see ?isSingular
+

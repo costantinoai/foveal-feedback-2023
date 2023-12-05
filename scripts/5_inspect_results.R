@@ -76,7 +76,7 @@ set.seed(42)
 # -----------------------------------------------------------
 # 2. Data Loading and Pre-processing
 
-X <- fread('/home/eik-tb/OneDrive_andreaivan.costantino@kuleuven.be/GitHub/foveal-feedback-2023/res/PPI/ppi_results.csv') # Load the fMRI dataset
+X <- fread('../res/PPI/ppi_results.csv') # Load the fMRI dataset
 # X[, V1 := NULL] # Remove the V1 column
 X[, run := as.factor(run)] # Convert 'run' column to factor type
 XX <- X[, lapply(.SD, mean), .(run, TR)] # Aggregate data by 'run' and 'TR'
@@ -95,8 +95,8 @@ XX <- X[, lapply(.SD, mean), .(run, TR)] # Aggregate data by 'run' and 'TR'
 # 4. Mixed Linear Models
 
 # List of predictors
-# predictors <- c("y_per", "y_opp", "y_loc", "y_ffa", "y_a1")
-predictors <- c("y_per", "y_opp", "y_loc", "y_ffa")
+predictors <- c("y_per", "y_opp", "y_loc", "y_ffa", "y_a1")
+# predictors <- c("y_per", "y_opp", "y_loc", "y_ffa")
 
 # Function to create a model for a given predictor
 create_model <- function(predictor, data) {
@@ -120,11 +120,7 @@ create_model <- function(predictor, data) {
 model_dict <- list()
 
 # Initialize an empty data frame to store results
-results_df <- data.frame(Predictor = character(),
-                         Beta = numeric(),
-                         CI_Lower = numeric(),
-                         CI_Upper = numeric(),
-                         stringsAsFactors = FALSE)
+results_df_list <- list()
 
 # Loop through predictors, create models, and extract summaries
 for(predictor in predictors){
@@ -134,75 +130,77 @@ for(predictor in predictors){
   cat(paste0("Summary for ", predictor, ":\n"))
   model_summary <- summary(model)
   print(model_summary)
-  
-  # # Compute confidence intervals
-  # ci <- confint(model, method = "profile")
-  # 
-  # # Extract and store coefficients and confidence intervals
-  # beta_coeffs <- fixef(model)
-  # for(term in names(beta_coeffs)) {
-  #   beta <- beta_coeffs[term]
-  #   ci_lower <- ci[term, 1]
-  #   ci_upper <- ci[term, 2]
-  #   
-  #   # Append to the dataframe
-  #   results_df <- rbind(results_df, data.frame(
-  #     Predictor = term,
-  #     Beta = beta,
-  #     CI_Lower = ci_lower,
-  #     CI_Upper = ci_upper
-  #   ))
-  # }
+
+  sink(paste("model_summary", predictor, ".csv", sep=""))
+  print(summary(model))
+  sink()
+
+  results_df <- data.table(contest(model, L=c(0, 0, 0, 1, 0,
+                                              0, 0, 0, 0, 0,
+                                              0, 0, 0, 0, 0,
+                                              0, 0),
+                                   joint=F, confint=T))
+  results_df[, predictor := predictor]
+  results_df_list[[predictor]] = results_df
 }
 
-# -----------------------------------------------------------
-# 5. Model Comparison - For each predictor, we'll compare two models to determine the better fit.
+results_df = rbindlist(results_df_list)
+# print(results_df)
+fwrite(results_df, "results_df.csv")
 
-# Function to create models for a given predictor
-create_models <- function(predictor, data){
-  # Corrected interaction term construction
-  interaction_term <- paste0("y_ppi_", sub("y_", "", predictor))
-  
-  # Model with interaction term
-  model_1_formula <- as.formula(paste0("y_fov ~ y_p + ", predictor, " + ", interaction_term, 
-                                       " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + ", interaction_term, "|sub) + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"))
-  model_1 <- lmer(model_1_formula, data = data)
-  
-  # Model without interaction term
-  model_2_formula <- as.formula(paste0("y_fov ~ y_p + ", predictor, 
-                                       " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + ", interaction_term, "|sub) + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"))
-  model_2 <- lmer(model_2_formula, data = data)
-  
-  return(list(model_1, model_2))
-}
+# ggplot(results_df, aes(x=predictor, y=Estimate, ymin=lower, ymax=upper)) +
+#       geom_pointrange() +
+#         ylab('Beta PPI regression coefficient') +
+#           ggtitle('Functional Connectivity')
+#       ggsave('fig_ppi.png')
 
-# Function to perform model comparison
-compare_models <- function(model_1, model_2, cl){
-  return(pbkrtest::PBmodcomp(model_1, model_2, seed=0, nsim=5000, cl=cl))
-}
-
-# Detect number of CPU cores and create a cluster for parallel processing
-nc <- detectCores() 
-cl <- makeCluster(rep("localhost", nc))
-
-# Lists to store models and results
-model_list <- list()
-results <- list()
-
-# Loop through predictors and conduct model comparisons
-for(predictor in predictors){
-  models <- create_models(predictor, X)
-  model_list[[predictor]] <- models[[1]]  # Store the model with interaction for summaries
-  results[[predictor]] <- compare_models(models[[1]], models[[2]], cl)
-  
-  # Display summaries and equations
-  cat(paste0("Summary for ", predictor, " (with interaction):\n"))
-  print(summary(model_list[[predictor]], ddf=ddf))
-  cat(paste0("Model comparison for ", predictor, ":\n"))
-  print(summary(results[[predictor]]))
-  
-}
-
-write.csv(results_df, "./res/PPI/R_results.csv", row.names = FALSE)
+# # -----------------------------------------------------------
+# # 5. Model Comparison - For each predictor, we'll compare two models to determine the better fit.
+# 
+# # Function to create models for a given predictor
+# create_models <- function(predictor, data){
+#   # Corrected interaction term construction
+#   interaction_term <- paste0("y_ppi_", sub("y_", "", predictor))
+#   
+#   # Model with interaction term
+#   model_1_formula <- as.formula(paste0("y_fov ~ y_p + ", predictor, " + ", interaction_term, 
+#                                        " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + ", interaction_term, "|sub) + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"))
+#   model_1 <- lmer(model_1_formula, data = data)
+#   
+#   # Model without interaction term
+#   model_2_formula <- as.formula(paste0("y_fov ~ y_p + ", predictor, 
+#                                        " + (0 + y_p|sub) + (0 + ", predictor, "|sub) + (0 + ", interaction_term, "|sub) + (1|sub) + run + tx + ty + tz + rx + ry + rz + drift_1 + drift_2 + drift_3 + 1"))
+#   model_2 <- lmer(model_2_formula, data = data)
+#   
+#   return(list(model_1, model_2))
+# }
+# 
+# # Function to perform model comparison
+# compare_models <- function(model_1, model_2, cl){
+#   return(pbkrtest::PBmodcomp(model_1, model_2, seed=0, nsim=5000, cl=cl))
+# }
+# 
+# # Detect number of CPU cores and create a cluster for parallel processing
+# nc <- detectCores() 
+# cl <- makeCluster(rep("localhost", nc))
+# 
+# # Lists to store models and results
+# model_list <- list()
+# results <- list()
+# 
+# # Loop through predictors and conduct model comparisons
+# for(predictor in predictors){
+#   models <- create_models(predictor, X)
+#   model_list[[predictor]] <- models[[1]]  # Store the model with interaction for summaries
+#   results[[predictor]] <- compare_models(models[[1]], models[[2]], cl)
+#   
+#   # Display summaries and equations
+#   cat(paste0("Summary for ", predictor, " (with interaction):\n"))
+#   print(summary(model_list[[predictor]], ddf=ddf))
+#   cat(paste0("Model comparison for ", predictor, ":\n"))
+#   print(summary(results[[predictor]]))
+# }
+# 
+# write.csv(results_df, "../res/PPI/R_results.csv", row.names = FALSE)
 
 

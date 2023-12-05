@@ -68,7 +68,7 @@ def load_roi_images(subject, dir_rois):
         "opp": glob.glob(os.path.join(dir_rois, "sub-" + subject, "*label-OPP_roi.nii"))[0],
         "ffa": glob.glob(os.path.join(dir_rois, "sub-" + subject, "*label-FFA_roi.nii"))[0],
         "loc": glob.glob(os.path.join(dir_rois, "sub-" + subject, "*label-LOC_roi.nii"))[0],
-        # "a1": glob.glob(os.path.join(dir_rois, "sub-"+subject, '*label-A1_roi.nii'))[0]
+        "a1": glob.glob(os.path.join(dir_rois, "sub-"+subject, '*label-A1_roi.nii'))[0]
     }
 
     for roi_name, path in paths.items():
@@ -190,7 +190,7 @@ def apply_pca_and_extract_signal(data, mask):
     return transformed_data, pca.explained_variance_ratio_[0]
 
 
-def process_run(sub, run):
+def process_run(sub, run, bids_root, dir_rois, sub_fmriprep_dir, rois):
     
         print(f"STEP: Processing subject {sub}, run {run}\n")
     
@@ -202,9 +202,11 @@ def process_run(sub, run):
             pass
 
         n_scans = func_img_data.shape[-1]  # Number of time frames in the functional data
+        # Reshape to (n_samples, n_features) where a sample
+        # is a TR and a feature is a voxel.
         func_img = np.reshape(
             func_img_data, (-1, n_scans)
-        ).T  # Reshape to (n_samples, n_features)
+        ).T  
         # print(f"\tLoaded functional data for subject {sub}, run {run} with {n_scans} scans")
 
         # Load events
@@ -254,46 +256,57 @@ def process_run(sub, run):
         
         return X
 
+if __name__ == '__main__':
 
-# Run the main function
-bids_root = "/data/projects/fov/data/BIDS"
-dir_rois = os.path.join(bids_root, "derivatives", "rois")
-fmriprep_dir = os.path.join(bids_root, "derivatives", "fMRIprep")
-out_dir = "./res/PPI/"
-os.makedirs(out_dir, exist_ok=True)
+    # Run the main function
+    # bids_root = "/data/projects/fov/data/BIDS"
+    bids_root = "../data/BIDS"
+    dir_rois = os.path.join(bids_root, "derivatives", "rois")
+    fmriprep_dir = os.path.join(bids_root, "derivatives", "fMRIprep")
+    out_dir = "../res/PPI/"
+    os.makedirs(out_dir, exist_ok=True)
 
-# List of subjects
-subjects = [str(i).zfill(2) for i in range(2, 26)]
-# subjects = [str(i).zfill(2) for i in range(2,4)]
+    # List of subjects
+    subjects = [str(i).zfill(2) for i in range(2, 26)]
+    # subjects = [str(i).zfill(2) for i in range(2,4)]
 
-X_rec = []
+    # TODO: these two subs throw an error for some reason
+    subjects = [x for x in subjects if x not in ['09', '12']]
 
-for sub in subjects:
-    # Load ROIs
-    rois = load_roi_images(sub, dir_rois)
-    print("=" * 40)
-    
-    # Identify directories and files
-    expression = '*_task-exp_run-*_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz'
-    sub_fmriprep_dir = os.path.join(fmriprep_dir, "sub-" + sub, "func")
-    
-    # Total number of runs
-    runs_n = len(glob.glob(os.path.join(sub_fmriprep_dir, expression)))
-    
-    # Using ProcessPoolExecutor
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        # Collect all future objects
-        futures = [executor.submit(process_run, sub, run) for run in range(1, runs_n + 1)]
+    X_rec = []
+
+    for sub in subjects:
+        # Load ROIs
+        rois = load_roi_images(sub, dir_rois)
+        print("=" * 40)
+
+        # Identify directories and files
+        expression = '*_task-exp_run-*_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz'
+        sub_fmriprep_dir = os.path.join(fmriprep_dir, "sub-" + sub, "func")
         
-        # As each future completes, append its result to X_rec
-        for future in concurrent.futures.as_completed(futures):
-            X_rec.append(future.result())
-    
+        # Total number of runs
+        runs_n = len(glob.glob(os.path.join(sub_fmriprep_dir, expression)))
+        
+        # Using ProcessPoolExecutor
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            # Collect all future objects
+            futures = [executor.submit(process_run, 
+                                       sub,
+                                       run, 
+                                       bids_root,
+                                       dir_rois,
+                                       sub_fmriprep_dir,
+                                       rois) for run in range(1, runs_n + 1)]
+            
+            # As each future completes, append its result to X_rec
+            for future in concurrent.futures.as_completed(futures):
+                X_rec.append(future.result())
+        
 
-# Post processing
-X = pd.concat(X_rec).groupby(["sub", "run", "TR"]).mean().reset_index()
+    # Post processing
+    X = pd.concat(X_rec).groupby(["sub", "run", "TR"]).mean().reset_index()
 
-# Save to file
-filename_out = os.path.join(out_dir, "ppi_results.csv")
-X.to_csv(filename_out, index=False)
-print(f"Saved the final DataFrame to {filename_out}")
+    # Save to file
+    filename_out = os.path.join(out_dir, "ppi_results.csv")
+    X.to_csv(filename_out, index=False)
+    print(f"Saved the final DataFrame to {filename_out}")
