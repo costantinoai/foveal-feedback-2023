@@ -33,11 +33,15 @@ To set up the dataset for this repository, follow the instructions below:
    - **For Linux and macOS**:
      1. Open a terminal.
      2. Navigate to the directory where you downloaded the dataset.
-     3. Use the following command to extract the dataset:
+     3. First, combine the parts into a single ZIP file using the `cat` command:
         ```bash
-        cat BIDS.zip.* | unzip - -d ./data
+        cat BIDS.zip.* > BIDS_combined.zip
         ```
-     4. This will concatenate the parts and extract the `BIDS` folder into `./data`.
+     4. Next, extract the combined ZIP file:
+        ```bash
+        unzip BIDS_combined.zip -d ./data
+        ```
+     5. This will extract the `BIDS` folder into `./data`.
 
    - **For Windows**:
      1. Navigate to the folder where you downloaded the dataset using File Explorer.
