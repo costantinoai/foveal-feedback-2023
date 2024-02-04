@@ -271,7 +271,7 @@ if __name__ == '__main__':
     # subjects = [str(i).zfill(2) for i in range(2,4)]
 
     # TODO: these two subs throw an error for some reason
-    subjects = [x for x in subjects if x not in ['09', '12']]
+    # subjects = [x for x in subjects if x not in ['09', '12']]
 
     X_rec = []
 
