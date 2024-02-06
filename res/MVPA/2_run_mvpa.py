@@ -21,7 +21,8 @@ from sklearn.model_selection import GroupKFold
 from sklearn.svm import SVC
 from scipy.stats import ttest_1samp, t, sem
 from scipy.io import loadmat
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, classification_report 
+from sklearn.metrics import ConfusionMatrixDisplay
 import warnings
 
 # Ignore specific warnings
@@ -37,7 +38,97 @@ def copy_script(out_dir):
     script_file_out = os.path.join(out_dir, os.path.basename(__file__))
     shutil.copy(__file__, script_file_out)
 
+def display_prettified_confusion_matrix(y_true, y_pred, title, normalize='all', cmap='Blues', figsize=(20, 16), plot_dir=None):
+    """
+    Display a prettified confusion matrix with normalization, color mapping, and an informative title, ensuring that
+    the plot's color range is set to [0, 1] for normalized matrices.
 
+    Parameters:
+    - y_true (array-like): True labels of the test data.
+    - y_pred (array-like): Predicted labels by the classifier.
+    - subject_id (str): Identifier of the subject being analyzed.
+    - roi_name (str): Name of the Region of Interest.
+    - conditions (list): Conditions or class labels involved in the classification.
+    - normalize (str, optional): Normalization method for the confusion matrix. Default is 'true'.
+    - cmap (str, optional): Matplotlib colormap name for coloring the confusion matrix. Default is 'Blues'.
+    - figsize (tuple, optional): Figure size as a tuple (width, height) in inches. Default is (10, 8).
+
+    Returns:
+    None: This function does not return a value; it displays the confusion matrix plot directly.
+    """
+    # Set the figure size for the plot
+    plt.figure(figsize=figsize)
+
+    # Generate the confusion matrix plot
+    display = ConfusionMatrixDisplay.from_predictions(y_true, y_pred, normalize=normalize, cmap=cmap)
+
+    # Adjust the color range for normalized matrices
+    display.im_.set_clim(0, 1)
+    
+    # Add an informative title
+    plt.title(title, fontsize=15)
+    
+    if plot_dir is not None:
+        plt.savefig(f"{plot_dir}/{title.replace(': ', '-').replace(' ', '_')}.png", bbox_inches='tight')
+    plt.show()
+    
+def generate_and_display_metrics(y_true, y_pred, conditions=None, subject_id=None, roi_name=None, plot_dir=None):
+    """
+    Generate and display confusion matrices and classification reports for the given true and predicted labels,
+    then display a prettified confusion matrix with dynamic title generation based on provided metadata.
+
+    Parameters:
+    - y_true (array-like): True labels of the test data.
+    - y_pred (array-like): Predicted labels by the classifier.
+    - subject_id (str, optional): Identifier of the subject being analyzed. If not provided, it's omitted from the title.
+    - roi_name (str, optional): Name of the Region of Interest. If not provided, it's omitted from the title.
+
+    Returns:
+    None: This function does not return a value; it prints and displays metrics directly.
+    """
+
+    # Flatten the arrays
+    y_true = np.ravel(y_true)
+    y_pred = np.ravel(y_pred)
+    
+    # Proceed to generate confusion matrices and reports with the flattened arrays
+    conf_mat = confusion_matrix(y_true, y_pred)
+    reports = classification_report(y_true, y_pred, output_dict=True)    
+    
+    # Infer conditions from the unique, sorted values of y_true
+    if conditions == None:
+        conditions = np.unique(y_true)
+            
+    # Dynamically construct the title based on the provided information
+    title_elements = []
+    if subject_id:
+        title_elements.append(f"Subject: {subject_id}")
+    if roi_name:
+        title_elements.append(f"ROI: {roi_name}")
+    title_elements.append(f"Classes: {conditions}")
+    title = " - ".join(title_elements) if title_elements else "Classification Metrics"
+    
+    # Print the confusion matrix and classification report
+    print("\n==================================")
+    print(f"\n#### {title} ####")
+    print("\nConfusion Matrix:\n", conf_mat)
+    print("\nClassification Report:\n", classification_report(y_true, y_pred))
+
+
+    if plot_dir is not None and os.path.exists(plot_dir):
+
+        # Display the prettified confusion matrix
+        display_prettified_confusion_matrix(
+            y_true, 
+            y_pred, 
+            title, 
+            normalize='true',
+            cmap='Blues', 
+            figsize=(10, 8),
+            plot_dir=plot_dir
+        )
+    return conf_mat, reports
+    
 def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
     """
     Perform data classification using Support Vector Machines (SVM) and
@@ -52,24 +143,23 @@ def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
     - conditions (list): Conditions under which classification is performed.
     - subject_id (str): Identifier of the subject being analyzed.
 
-    Returns:
-    - acc (float): Average accuracy of the model.
-    - conf_mat (array-like): Confusion matrix of the model.
     """
 
     # Define SVM kernel type
     kernel = "linear"
 
-    # Establish the number of groups and initialize the GroupKFold
-    runs_n = len(np.unique(runs_idx))
-    gkf = GroupKFold(n_splits=runs_n)
+    # Initialize GroupKFold with the number of unique groups
+    gkf = GroupKFold(n_splits=len(np.unique(runs_idx)))
 
-    # Initialize a NumPy array to store performance at each step
-    performance_step = np.zeros(gkf.n_splits)
+    # Initialize lists to store accuracy for each fold
+    training_accuracy = []
+    testing_accuracy = []
 
-    # Determine the unique labels and initialize the confusion matrix
-    labels_n = len(np.unique(y))
-    conf_mat = np.zeros((gkf.n_splits, labels_n, labels_n))
+    # Prepare lists to aggregate true and predicted labels across all folds for confusion matrix and report
+    y_true_aggregated = []
+    y_pred_aggregated = []
+    y_true_aggregated_train = []
+    y_pred_aggregated_train = []
 
     # Output an overview message
     print(f"### CLASSIFICATION - {subject_id} {conditions} ###")
@@ -77,9 +167,10 @@ def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
     # Loop through each split of the data into training and test sets
     for i, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups=runs_idx)):
         # Output the current step and related indices information
+        print("\n\n===================================================")
         print(f"## {subject_id} ## {roi_name} ## STEP: {i+1} ##")
-        print("Indices of train-samples:", train_idx.tolist())
-        print("Indices of test-samples:", test_idx.tolist())
+        print("Indices of train samples:", train_idx.tolist())
+        print("Indices of test samples:", test_idx.tolist())
         print("... corresponding to the following runs:", runs_idx[test_idx].tolist())
 
         # Define training and test sets
@@ -89,32 +180,37 @@ def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
         # Instantiate and fit the classifier on the training data
         clf = SVC(kernel=kernel, random_state=42).fit(X_train, y_train)
 
-        # Predict labels for test and training sets
-        y_hat = clf.predict(X_test)
-        y_hat_training = clf.predict(X_train)
+        # Predict labels for training and test sets
+        y_pred_train = clf.predict(X_train)
+        y_pred_test = clf.predict(X_test)
+        
+        # Record training and testing accuracy
+        train_acc = clf.score(X_train, y_train)
+        test_acc = clf.score(X_test, y_test)
+        training_accuracy.append(train_acc)
+        testing_accuracy.append(test_acc)
 
-        # Store performance metrics and compute the confusion matrix
-        performance_step[i] = clf.score(X_test, y_test)
-        conf_mat[i] = confusion_matrix(y_test, y_hat)
+        # Aggregate true and predicted labels for test set
+        y_true_aggregated.extend(y_test)
+        y_pred_aggregated.extend(y_pred_test)
+        y_true_aggregated_train.extend(y_train)
+        y_pred_aggregated_train.extend(y_pred_train)
 
-        # Output predictions and performance for the current step
-        print(
-            f"TRAINING BATCH: \t{list(y_train)} \nTRAINING PREDICTED: {list(y_hat_training)} \nTARGET: \t\t{list(y_test)} \nPREDICTED: \t{list(y_hat)}"
-        )
-        print(
-            f"TRAINING ACC: {performance_step[i]}, TEST ACC: {round(performance_step[i],2)}, STEP: {i+1}\n"
-        )
+        # Output detailed predictions and performance for the current step
+        print(f"\nTraining Accuracy: {train_acc:.2f}, Testing Accuracy: {test_acc:.2f}")
+        print(f"\nTraining Predicted vs Actual: {list(zip(y_pred_train, y_train))}")
+        print(f"\nTesting Predicted vs Actual: {list(zip(y_pred_test, y_test))}\n")
 
-    # Calculate and output the average accuracy
-    acc = np.average(performance_step)
-    print(f"TOTAL ACCURACY: {acc}\n\n")
-
-    # Return accuracy and the confusion matrix
-    return (
-        performance_step,
-        conf_mat,
-    )
-
+    # Calculate overall performance metrics
+    avg_training_accuracy = np.mean(training_accuracy)
+    avg_testing_accuracy = np.mean(testing_accuracy)
+    
+    # Print overall metrics
+    print(f"Average Training Accuracy: {avg_training_accuracy:.2f}")
+    print(f"Average Testing Accuracy: {avg_testing_accuracy:.2f}\n")
+    
+    # Return the performance metrics
+    return testing_accuracy, y_true_aggregated, y_pred_aggregated, y_true_aggregated_train, y_pred_aggregated_train
 
 def initialize_graph_dataframe(params):
     """
@@ -150,7 +246,14 @@ def initialize_reports_and_results(params):
         conditions: {
             roi: {
                 "acc": [],
+                "y_true_aggregated": [],
+                "y_pred_aggregated": [],
+                "y_true_aggregated_train": [],
+                "y_pred_aggregated_train": [],
                 "confmat": [],
+                "report": [],
+                "confmat_train": [],
+                "report_train": [],
                 "T-test": {"t": float, "p": float, "avg": float, "std": float, "d": float},
             }
             for roi in params["rois"]
@@ -458,7 +561,6 @@ def calculate_ttest_statistics(params, conditions, roi):
 
     return {"t": t, "p": p, "avg": avg, "std": std, "d": d}
 
-
 def print_ttest_statistics(stats, roi):
     """
     Print the t-test statistics.
@@ -528,13 +630,13 @@ def prepare_data_for_plotting(params, selected_rois):
     """
 
     graph_df = params['results']['graph_df']
-    agg_data = graph_df[graph_df['roi'].isin(selected_rois)]
+    agg_data = graph_df[graph_df['roi'].isin(selected_rois)].copy()
     
     # Assign order numbers to each row in the DataFrame based on the comparison type.
-    agg_data["order"] = agg_data["comparison"].apply(get_order)
-
+    agg_data.loc[:, "order"] = agg_data.loc[:, "comparison"].apply(get_order)
+    
     # Convert the 'roi' column to a categorical data type with custom order
-    agg_data['roi'] = pd.Categorical(agg_data['roi'], categories=selected_rois, ordered=True)
+    agg_data.loc[:, 'roi'] = pd.Categorical(agg_data['roi'], categories=selected_rois, ordered=True)
 
     # Sort the DataFrame based on the 'roi' and 'order' columns.
     agg_data = agg_data.sort_values(["roi", "order"], axis=0)
@@ -912,7 +1014,7 @@ derivatives_bids = "/data/projects/fov/data/BIDS/derivatives"
 
 # Parameters
 params = {
-    "out_dir": r"./res/MVPA",
+    "out_dir": r"/home/eik-tb/Desktop/mvpa_new",
     "beta_root": os.path.join(derivatives_bids, "SPMglm-fmriprep"),
     "rois_root": os.path.join(derivatives_bids, "rois"),
     "conditions_list": [
@@ -977,6 +1079,7 @@ for conditions in params["conditions_list"]:
     print(f"START: {datetime.now()} - Logging = {params['log']}")
 
     # SELECT BETAS
+    # for sub_id in range(2, 26):
     for sub_id in range(2, 26):
         sub = get_subject_id(sub_id)
 
@@ -1002,21 +1105,45 @@ for conditions in params["conditions_list"]:
             X, y, runs_idx = prepare_dataset_for_classification(betas_df, mask_files, roi_name)
             print("done!")
 
-            acc_long, conf_mat_long = perform_classification(
+            testing_accuracy, y_true_aggregated, y_pred_aggregated, y_true_aggregated_train, y_pred_aggregated_train = perform_classification(
                 X, y, runs_idx, roi_name, conditions, sub
             )
 
-            params["results"]["classification"][conditions][roi_name]["acc"].append(acc_long)
-            params["results"]["classification"][conditions][roi_name]["confmat"].append(
-                conf_mat_long
-            )
-
-    # PERFORM T-TEST
+            params["results"]["classification"][conditions][roi_name]["acc"].append(testing_accuracy)
+            params["results"]["classification"][conditions][roi_name]["y_true_aggregated"].append(y_true_aggregated)
+            params["results"]["classification"][conditions][roi_name]["y_pred_aggregated"].append(y_pred_aggregated)
+            params["results"]["classification"][conditions][roi_name]["y_true_aggregated_train"].append(y_true_aggregated_train)
+            params["results"]["classification"][conditions][roi_name]["y_pred_aggregated_train"].append(y_pred_aggregated_train)
+            
     for roi in params["rois"]:
+        # Here we generate confusion matrices and reports across all folds and all participants for a given ROI and comparison
+        roi_cond_confmat, roi_cond_report = generate_and_display_metrics(
+            params["results"]["classification"][conditions][roi]["y_true_aggregated"], 
+            params["results"]["classification"][conditions][roi]["y_pred_aggregated"], 
+            conditions=conditions,
+            roi_name=roi, 
+            plot_dir=params["out_dir"]
+            )
+        
+        params["results"]["classification"][conditions][roi_name]["confmat"] = roi_cond_confmat
+        params["results"]["classification"][conditions][roi_name]["report"] = roi_cond_report
+        
+        roi_cond_confmat_train, roi_cond_report_train = generate_and_display_metrics(
+            params["results"]["classification"][conditions][roi]["y_true_aggregated_train"], 
+            params["results"]["classification"][conditions][roi]["y_pred_aggregated_train"], 
+            conditions=conditions,
+            roi_name=roi+'+TRAIN', 
+            plot_dir=params["out_dir"]
+            )
+        
+        params["results"]["classification"][conditions][roi_name]["confmat_train"] = roi_cond_confmat_train
+        params["results"]["classification"][conditions][roi_name]["report_train"] = roi_cond_report_train
+        
+        # PERFORM T-TEST
         ttest_stats = calculate_ttest_statistics(params, conditions, roi)
         print_ttest_statistics(ttest_stats, roi)
         params["results"]["graph_df"] = update_graph_dataframe(params, conditions, roi, ttest_stats)
-
+        
 print("STEP: preparing and plotting figures...", end="\r")
 
 # PRINT STATS
