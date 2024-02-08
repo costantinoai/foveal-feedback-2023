@@ -17,21 +17,12 @@ import numpy as np
 import nibabel as nb
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import GroupKFold, StratifiedGroupKFold, LeavePGroupsOut
 from sklearn.svm import SVC
 from scipy.stats import ttest_1samp, t, sem
 from scipy.io import loadmat
-from sklearn.metrics import confusion_matrix, classification_report 
+from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.metrics import ConfusionMatrixDisplay
-import warnings
-
-# Ignore specific warnings
-warnings.filterwarnings(
-    "ignore",
-    message="Precision loss occurred in moment calculation due to catastrophic cancellation.",
-)
-warnings.filterwarnings("ignore", message="divide by zero encountered in scalar divide")
-
 
 def copy_script(out_dir):
     # Copy the script file into the results folder
@@ -66,7 +57,8 @@ def display_prettified_confusion_matrix(y_true, y_pred, title, normalize='all', 
     display.im_.set_clim(0, 1)
     
     # Add an informative title
-    plt.title(title, fontsize=15)
+    plot_title_short = title.split(' - ')[0]
+    plt.title(plot_title_short, fontsize=15)
     
     if plot_dir is not None:
         plt.savefig(f"{plot_dir}/{title.replace(': ', '-').replace(' ', '_')}.png", bbox_inches='tight')
@@ -124,7 +116,7 @@ def generate_and_display_metrics(y_true, y_pred, conditions=None, subject_id=Non
             title, 
             normalize='true',
             cmap='Blues', 
-            figsize=(10, 8),
+            figsize=(20, 16),
             plot_dir=plot_dir
         )
     return conf_mat, reports
@@ -149,7 +141,7 @@ def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
     kernel = "linear"
 
     # Initialize GroupKFold with the number of unique groups
-    gkf = GroupKFold(n_splits=len(np.unique(runs_idx)))
+    gkf = StratifiedGroupKFold(n_splits=len(np.unique(runs_idx)))
 
     # Initialize lists to store accuracy for each fold
     training_accuracy = []
@@ -166,6 +158,89 @@ def perform_classification(X, y, runs_idx, roi_name, conditions, subject_id):
 
     # Loop through each split of the data into training and test sets
     for i, (train_idx, test_idx) in enumerate(gkf.split(X, y, groups=runs_idx)):
+        # Output the current step and related indices information
+        print("\n\n===================================================")
+        print(f"## {subject_id} ## {roi_name} ## STEP: {i+1} ##")
+        print("Indices of train samples:", train_idx.tolist())
+        print("Indices of test samples:", test_idx.tolist())
+        print("... corresponding to the following runs:", runs_idx[test_idx].tolist())
+
+        # Define training and test sets
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]
+
+        # Instantiate and fit the classifier on the training data
+        clf = SVC(kernel=kernel, random_state=42).fit(X_train, y_train)
+
+        # Predict labels for training and test sets
+        y_pred_train = clf.predict(X_train)
+        y_pred_test = clf.predict(X_test)
+        
+        # Record training and testing accuracy
+        train_acc = clf.score(X_train, y_train)
+        test_acc = clf.score(X_test, y_test)
+        training_accuracy.append(train_acc)
+        testing_accuracy.append(test_acc)
+
+        # Aggregate true and predicted labels for test set
+        y_true_aggregated.extend(y_test)
+        y_pred_aggregated.extend(y_pred_test)
+        y_true_aggregated_train.extend(y_train)
+        y_pred_aggregated_train.extend(y_pred_train)
+
+        # Output detailed predictions and performance for the current step
+        print(f"\nTraining Accuracy: {train_acc:.2f}, Testing Accuracy: {test_acc:.2f}")
+        print(f"\nTraining Predicted vs Actual: {list(zip(y_pred_train, y_train))}")
+        print(f"\nTesting Predicted vs Actual: {list(zip(y_pred_test, y_test))}\n")
+
+    # Calculate overall performance metrics
+    avg_training_accuracy = np.mean(training_accuracy)
+    avg_testing_accuracy = np.mean(testing_accuracy)
+    
+    # Print overall metrics
+    print(f"Average Training Accuracy: {avg_training_accuracy:.2f}")
+    print(f"Average Testing Accuracy: {avg_testing_accuracy:.2f}\n")
+    
+    # Return the performance metrics
+    return testing_accuracy, y_true_aggregated, y_pred_aggregated, y_true_aggregated_train, y_pred_aggregated_train
+
+def perform_classification_leavepout(X, y, runs_idx, roi_name, conditions, subject_id):
+    """
+    Perform data classification using Support Vector Machines (SVM) and
+    cross-validation, printing and returning relevant classification metrics.
+
+    Parameters:
+    - X (array-like): Input data, where `n_samples` is the number of samples and
+                      `n_features` is the number of features.
+    - y (array-like): Target values.
+    - runs_idx (array-like): Group labels for the samples.
+    - roi_name (str): Name of the Region of Interest.
+    - conditions (list): Conditions under which classification is performed.
+    - subject_id (str): Identifier of the subject being analyzed.
+
+    """
+
+    # Define SVM kernel type
+    kernel = "linear"
+
+    # Initialize GroupKFold with the number of unique groups
+    lpgo = LeavePGroupsOut(n_groups=2)
+
+    # Initialize lists to store accuracy for each fold
+    training_accuracy = []
+    testing_accuracy = []
+
+    # Prepare lists to aggregate true and predicted labels across all folds for confusion matrix and report
+    y_true_aggregated = []
+    y_pred_aggregated = []
+    y_true_aggregated_train = []
+    y_pred_aggregated_train = []
+
+    # Output an overview message
+    print(f"### CLASSIFICATION - {subject_id} {conditions} ###")
+
+    # Loop through each split of the data into training and test sets
+    for i, (train_idx, test_idx) in enumerate(lpgo.split(X, y, groups=runs_idx)):
         # Output the current step and related indices information
         print("\n\n===================================================")
         print(f"## {subject_id} ## {roi_name} ## STEP: {i+1} ##")
@@ -649,13 +724,161 @@ def prepare_data_for_plotting(params, selected_rois):
 
     return agg_data
 
+def prepare_data_for_violin_plotting(params, selected_rois):
+    """
+    Prepare the dataframe for plotting by collating relevant data from the provided parameters.
+
+    Args:
+    - params (dict): Dictionary containing conditions, ROIs, results, and other relevant parameters.
+
+    Returns:
+    - data_all (DataFrame): A structured dataframe containing columns for comparison, ROI, subject number, accuracy, and ordering.
+    """
+    
+    classification_dict = params['results']['classification']
+    rows = []
+    
+    for comparison in classification_dict.keys():
+        for roi in classification_dict[comparison].keys():
+            acc_subjects_long = classification_dict[comparison][roi]["acc"]
+            acc_subjects_long_array = np.array(acc_subjects_long)
+            acc_subjects_array = np.mean(acc_subjects_long_array, axis=1)
+            for sub, acc in enumerate(acc_subjects_array):
+                row = [sub+2, comparison, roi, acc]
+                rows.append(row)
+        
+    
+    graph_df = pd.DataFrame(rows, columns=['sub', 'comparison', 'roi', 'acc'])
+    
+    agg_data = graph_df[graph_df['roi'].isin(selected_rois)].copy()
+    
+    # Assign order numbers to each row in the DataFrame based on the comparison type.
+    agg_data.loc[:, "order"] = agg_data.loc[:, "comparison"].apply(get_order)
+    
+    # Convert the 'roi' column to a categorical data type with custom order
+    agg_data.loc[:, 'roi'] = pd.Categorical(agg_data['roi'], categories=selected_rois, ordered=True)
+
+    # Sort the DataFrame based on the 'roi' and 'order' columns.
+    agg_data = agg_data.sort_values(["roi", "order"], axis=0)
+
+    # Convert 'comparison' column to string
+    agg_data["comparison"] = agg_data["comparison"].astype(str)
+
+    # Reset the index of the DataFrame.
+    agg_data = agg_data.reset_index(drop=True)
+
+    return agg_data
+    
+def plot_data_violin(params, selected_rois):
+    """
+    Plot data for selected regions of interest (ROIs) with specified plot type, error bars, and significance annotations.
+    
+    This function orchestrates the data plotting process by first preparing the data for the selected plot type,
+    plotting the data according to the chosen plot type (bar, box and whiskers, violin, or scatter), adding error bars
+    (if applicable), annotating statistical significance, and finally saving or displaying the plot based on provided parameters.
+    
+    Parameters:
+    - params: A dictionary containing parameters for plotting and saving the figures. This might include keys
+              like 'save_path', 'show_fig', 'figsize', etc.
+    - selected_rois: A list of strings representing the selected regions of interest to be plotted.
+    - plot_type: A string specifying the type of plot to generate. Valid options are 'bars', 'box', 'violin', or 'scatter'.
+                 Default is 'bars'.
+    
+    Returns:
+    - ax: The matplotlib axes object with the plot.
+    """
+    
+    # Prepare data for plotting based on the selected ROIs
+    data = prepare_data_for_violin_plotting(params, selected_rois)
+    
+    # Choose the plot type based on 'plot_type' parameter
+    ax = plot_violin(data)
+    
+    # Annotate statistical significance on the plot
+    agg_data = prepare_data_for_plotting(params, selected_rois)
+    annotate_significance(ax, agg_data)
+    
+    # Save and/or show the plot based on 'params'
+    save_and_show(params)
+    
+    return ax
 
 def plot_data(params, selected_rois):
+    """
+    Plot data for selected regions of interest (ROIs) with specified plot type, error bars, and significance annotations.
+    
+    This function orchestrates the data plotting process by first preparing the data for the selected plot type,
+    plotting the data according to the chosen plot type (bar, box and whiskers, violin, or scatter), adding error bars
+    (if applicable), annotating statistical significance, and finally saving or displaying the plot based on provided parameters.
+    
+    Parameters:
+    - params: A dictionary containing parameters for plotting and saving the figures. This might include keys
+              like 'save_path', 'show_fig', 'figsize', etc.
+    - selected_rois: A list of strings representing the selected regions of interest to be plotted.
+    - plot_type: A string specifying the type of plot to generate. Valid options are 'bars', 'box', 'violin', or 'scatter'.
+                 Default is 'bars'.
+    
+    Returns:
+    - ax: The matplotlib axes object with the plot.
+    """
+    
+    # Prepare data for plotting based on the selected ROIs
     agg_data = prepare_data_for_plotting(params, selected_rois)
-    ax = plot_bars(agg_data)
+    
+    # Choose the plot type based on 'plot_type' parameter
+    ax = plot_bars(agg_data)  # Plot bar chart
+    
+    # Add error bars if applicable (usually for bar and scatter plots)
     plot_error_bars(ax, agg_data)
+    
+    # Annotate statistical significance on the plot
     annotate_significance(ax, agg_data)
+    
+    # Save and/or show the plot based on 'params'
     save_and_show(params)
+    
+    return ax
+
+def plot_violin(agg_data):
+    """
+    Plot data as violin plots using seaborn, focusing on the distribution of classifier accuracy.
+
+    Parameters:
+    - agg_data (DataFrame): The aggregated dataset containing data points to be plotted.
+                            Expected columns include "roi", "acc", and "comparison".
+
+    Returns:
+    - ax (matplotlib.axes.Axes): The Axes object of the generated plot.
+    """
+
+    # Setting font scale for better readability
+    sns.set(font_scale=2)
+    # Create a figure with specified dimensions
+    fig_dims = (16, 10)
+    fig, ax = plt.subplots(figsize=fig_dims)
+    # Violin plot of accuracy distribution against ROI, categorized by comparison types
+    sns.boxplot(x="roi", y="acc", hue="comparison", data=agg_data, ax=ax)
+
+    # Setting legend with custom descriptions
+    legend_labels = [
+        "Category (Face vs. Vehicle)",
+        "Within-category, faces (Female vs. Male)",
+        "Within-category, vehicles (Bike vs. Car)",
+        "Sub-category (Bike vs. Car vs. Female vs. Male)",
+    ]
+    L = plt.legend()
+    for idx, label in enumerate(legend_labels):
+        L.get_texts()[idx].set_text(label)
+
+    # Adjusting axes limits, labels, title, and adding reference horizontal lines
+    # plt.ylim((0, 1))  # Adjust y-axis to show accuracy range from 0 to 1
+    plt.axhline(0.5, alpha=0.8, color="blue", ls="--", zorder=4)  # Blue dashed line at y=0.5 for reference
+    plt.xticks(rotation=30)  # Rotate x-axis labels for better readability
+    ax.set_ylabel("Accuracy")  # Set y-axis label to 'Accuracy'
+    ax.set_xlabel("ROI")  # Set x-axis label to 'ROI'
+    ax.set_title("Distribution of Classifier Accuracy by ROI and Comparison")  # Set plot title
+
+    return ax
 
 
 def plot_bars(agg_data):
@@ -1008,7 +1231,6 @@ def extract_data_to_dataframe(params):
 
     return results_df_long
 
-
 # Define the new root directory
 derivatives_bids = "/data/projects/fov/data/BIDS/derivatives"
 
@@ -1024,7 +1246,7 @@ params = {
         ("bike", "car", "female", "male"),
     ],
     "conditions_all": ("bike", "car", "female", "male", "rest"),
-    "log": True,  # Set this to True if you want to log results,
+    "log": False,  # Set this to True if you want to log results,
     "seed": 42,
     "results": {},
 }
@@ -1079,8 +1301,8 @@ for conditions in params["conditions_list"]:
     print(f"START: {datetime.now()} - Logging = {params['log']}")
 
     # SELECT BETAS
-    # for sub_id in range(2, 26):
     for sub_id in range(2, 26):
+    # for sub_id in range(2, 6):
         sub = get_subject_id(sub_id)
 
         print(f"STEP: {sub} - starting classification for {conditions}")
@@ -1105,10 +1327,13 @@ for conditions in params["conditions_list"]:
             X, y, runs_idx = prepare_dataset_for_classification(betas_df, mask_files, roi_name)
             print("done!")
 
+            # testing_accuracy, y_true_aggregated, y_pred_aggregated, y_true_aggregated_train, y_pred_aggregated_train = perform_classification_leavepout(
+            #     X, y, runs_idx, roi_name, conditions, sub
+            # )
             testing_accuracy, y_true_aggregated, y_pred_aggregated, y_true_aggregated_train, y_pred_aggregated_train = perform_classification(
                 X, y, runs_idx, roi_name, conditions, sub
             )
-
+           
             params["results"]["classification"][conditions][roi_name]["acc"].append(testing_accuracy)
             params["results"]["classification"][conditions][roi_name]["y_true_aggregated"].append(y_true_aggregated)
             params["results"]["classification"][conditions][roi_name]["y_pred_aggregated"].append(y_pred_aggregated)
@@ -1120,7 +1345,7 @@ for conditions in params["conditions_list"]:
         roi_cond_confmat, roi_cond_report = generate_and_display_metrics(
             params["results"]["classification"][conditions][roi]["y_true_aggregated"], 
             params["results"]["classification"][conditions][roi]["y_pred_aggregated"], 
-            conditions=conditions,
+            # conditions=conditions,
             roi_name=roi, 
             plot_dir=params["out_dir"]
             )
@@ -1131,8 +1356,8 @@ for conditions in params["conditions_list"]:
         roi_cond_confmat_train, roi_cond_report_train = generate_and_display_metrics(
             params["results"]["classification"][conditions][roi]["y_true_aggregated_train"], 
             params["results"]["classification"][conditions][roi]["y_pred_aggregated_train"], 
-            conditions=conditions,
-            roi_name=roi+'+TRAIN', 
+            # conditions=conditions,
+            roi_name=roi+' ', 
             plot_dir=params["out_dir"]
             )
         
@@ -1159,6 +1384,7 @@ selected_rois = [
 ]
 
 plot_data(params, selected_rois)
+# plot_data_violin(params, selected_rois)
 
 # SAVE LONG FORMAT CSV
 long_df = extract_data_to_dataframe(params)
