@@ -117,8 +117,11 @@ for(i in 1:length(predictors)) {
 d <- rbindlist(d)
 
 g <- ggplot(data=d, aes(x=Predictor, y=Estimate)) +
-    geom_pointrange(aes(ymin=lower, ymax=upper))
+    geom_pointrange(aes(ymin=lower, ymax=upper)) +
+    geom_hline(yintercept=0.0, linetype="dashed") +
+    xlab('') +
+    ylab('PPI regression coefficient') +
+    theme_classic()
 ggsave("../res/PPI/fig_ppi.png", g, width=6, height=3.5)
-
 
 print(d)
